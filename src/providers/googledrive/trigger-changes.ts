@@ -49,12 +49,9 @@ const channelRenewalLeadMs = 60 * 60 * 1000;
 const creatingGraceMs = 60 * 1000;
 const retryMs = 60 * 1000;
 const maximumUnresolvedChannels = 2;
-// A channel whose creation never returned a resourceId can only still be adopted
-// by a late sync notification. Keep it for a short window so that notification can
-// arrive; after that it can never recover, and leaving it in the list would make
-// the unresolved-channel cap and nextReconcileAt wait for its multi-day expiry
-// instead of retrying the subscription.
-const unresolvedChannelRetentionMs = 10 * 60 * 1000;
+// Limit uncertain watch attempts within this window, but retain their channel
+// records until expiration so late notifications can still enable cleanup.
+const unresolvedWatchRetryWindowMs = 10 * 60 * 1000;
 
 const encoder = new TextEncoder();
 const changeFields =
@@ -105,18 +102,6 @@ export const googleDriveChanges: IntegrationDefinition = {
       channels = current;
       await saveChannels(state, channels, context.now);
     }
-    // Release unresolved channels that can no longer be adopted by a late
-    // notification, so they stop holding back new watch attempts.
-    const retained = channels.filter(
-      (channel) =>
-        channel.resourceId != null ||
-        channel.state == "creating" ||
-        Date.parse(channel.createdAt) + unresolvedChannelRetentionMs > currentTime,
-    );
-    if (retained.length != channels.length) {
-      channels = retained;
-      await saveChannels(state, channels, context.now);
-    }
     if (!context.active) return await retire(context, channels);
 
     const adopted = channels
@@ -157,9 +142,14 @@ export const googleDriveChanges: IntegrationDefinition = {
       await saveChannels(state, channels, nextReconcileAt(channels, context.now));
       return { outcome: active == null ? "pending" : "ready" };
     }
-    const unresolved = channels.filter((channel) => channel.resourceId == null);
-    if (unresolved.length >= maximumUnresolvedChannels) {
-      await saveChannels(state, channels, nextReconcileAt(channels, context.now));
+    const unresolvedRetryTimes = channels
+      .filter((channel) => channel.resourceId == null)
+      .map((channel) =>
+        Math.min(Date.parse(channel.expiration), Date.parse(channel.createdAt) + unresolvedWatchRetryWindowMs),
+      )
+      .filter((retryAt) => retryAt > currentTime);
+    if (unresolvedRetryTimes.length >= maximumUnresolvedChannels) {
+      await saveChannels(state, channels, new Date(Math.min(...unresolvedRetryTimes)));
       return { outcome: active == null ? "pending" : "ready" };
     }
     return await watch(context, channels);
@@ -473,9 +463,7 @@ function nextReconcileAt(channels: readonly Channel[], now: Date): Date {
   const times = channels.map((channel) => {
     if (channel.state == "active") return Date.parse(channel.expiration) - channelRenewalLeadMs;
     if (channel.state == "creating") return Date.parse(channel.createdAt) + creatingGraceMs;
-    if (channel.resourceId == null)
-      return Math.min(Date.parse(channel.expiration), Date.parse(channel.createdAt) + unresolvedChannelRetentionMs);
-    return now.getTime() + retryMs;
+    return channel.resourceId == null ? Date.parse(channel.expiration) : now.getTime() + retryMs;
   });
   const next = times.length == 0 ? now.getTime() + retryMs : Math.min(...times);
   return new Date(Math.max(now.getTime(), next));
