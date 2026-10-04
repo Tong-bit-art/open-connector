@@ -49,6 +49,12 @@ const channelRenewalLeadMs = 60 * 60 * 1000;
 const creatingGraceMs = 60 * 1000;
 const retryMs = 60 * 1000;
 const maximumUnresolvedChannels = 2;
+// A channel whose creation never returned a resourceId can only still be adopted
+// by a late sync notification. Keep it for a short window so that notification can
+// arrive; after that it can never recover, and leaving it in the list would make
+// the unresolved-channel cap and nextReconcileAt wait for its multi-day expiry
+// instead of retrying the subscription.
+const unresolvedChannelRetentionMs = 10 * 60 * 1000;
 
 const encoder = new TextEncoder();
 const changeFields =
@@ -97,6 +103,18 @@ export const googleDriveChanges: IntegrationDefinition = {
     const current = channels.filter((channel) => Date.parse(channel.expiration) > currentTime);
     if (current.length != channels.length) {
       channels = current;
+      await saveChannels(state, channels, context.now);
+    }
+    // Release unresolved channels that can no longer be adopted by a late
+    // notification, so they stop holding back new watch attempts.
+    const retained = channels.filter(
+      (channel) =>
+        channel.resourceId != null ||
+        channel.state == "creating" ||
+        Date.parse(channel.createdAt) + unresolvedChannelRetentionMs > currentTime,
+    );
+    if (retained.length != channels.length) {
+      channels = retained;
       await saveChannels(state, channels, context.now);
     }
     if (!context.active) return await retire(context, channels);
@@ -455,7 +473,9 @@ function nextReconcileAt(channels: readonly Channel[], now: Date): Date {
   const times = channels.map((channel) => {
     if (channel.state == "active") return Date.parse(channel.expiration) - channelRenewalLeadMs;
     if (channel.state == "creating") return Date.parse(channel.createdAt) + creatingGraceMs;
-    return channel.resourceId == null ? Date.parse(channel.expiration) : now.getTime() + retryMs;
+    if (channel.resourceId == null)
+      return Math.min(Date.parse(channel.expiration), Date.parse(channel.createdAt) + unresolvedChannelRetentionMs);
+    return now.getTime() + retryMs;
   });
   const next = times.length == 0 ? now.getTime() + retryMs : Math.min(...times);
   return new Date(Math.max(now.getTime(), next));

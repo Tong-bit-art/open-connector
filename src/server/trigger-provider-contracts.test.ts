@@ -297,6 +297,76 @@ describe("Native Trigger provider transport and pagination contracts", () => {
     expect(calls.filter((url) => url.pathname === "/drive/v3/channels/stop")).toHaveLength(2);
   });
 
+  it("retries Google Drive channel creation after transient changes.watch failures", async () => {
+    let watchAttempts = 0;
+    respond((url, init) => {
+      if (url.pathname === "/drive/v3/changes/startPageToken") return { startPageToken: "initial-page" };
+      if (url.pathname === "/drive/v3/changes/watch") {
+        watchAttempts += 1;
+        if (watchAttempts <= 2)
+          return new Response(JSON.stringify({ error: { errors: [{ reason: "backendError" }] } }), { status: 500 });
+        const body = JSON.parse(String(init?.body)) as { id: string; expiration: string };
+        return { id: body.id, expiration: body.expiration, resourceId: "remote-resource" };
+      }
+      if (url.pathname === "/drive/v3/channels/stop") return {};
+      throw new Error(`Unexpected Google Drive request: ${url}`);
+    });
+
+    let checkpoint: JsonValue = null;
+    let subscription: Readonly<Record<string, JsonValue>> = { channels: [] };
+    let reconcileAt: Date | undefined;
+    const state: IntegrationStateContext = {
+      get checkpoint() {
+        return checkpoint;
+      },
+      get subscription() {
+        return subscription;
+      },
+      async saveCheckpoint(value) {
+        checkpoint = value;
+      },
+      async saveSubscription(value, nextReconcileAt) {
+        subscription = value;
+        reconcileAt = nextReconcileAt;
+      },
+    };
+    const start = new Date("2026-10-01T00:00:00.000Z");
+    const context = (now: Date) => ({
+      active: true,
+      config: resolveTriggerConfig(googleDriveChanges.snapshot.configInputs, {}),
+      connector: transport(driveProxy),
+      now,
+      state,
+      endpointUrl: "https://flow.example/callback",
+      callbackSecret: "callback-secret",
+      idempotencyKey: "binding-key",
+    });
+
+    // Two consecutive transient failures leave two channels that never received a
+    // resourceId, so both are unresolved in the channel state.
+    const first = start.getTime();
+    await expect(googleDriveChanges.reconcile(context(new Date(first)))).rejects.toThrow("changes.watch");
+    const second = first + 60_000;
+    await expect(googleDriveChanges.reconcile(context(new Date(second)))).rejects.toThrow("changes.watch");
+    expect(watchAttempts).toBe(2);
+
+    // The unresolved-channel cap must back off for a short retry window rather
+    // than the multi-day channel lifetime, or the subscription stops watching.
+    const third = second + 60_000;
+    expect(await googleDriveChanges.reconcile(context(new Date(third)))).toEqual({ outcome: "pending" });
+    // Both dead attempts stay adoptable through the late-notification window.
+    expect(subscription.channels).toHaveLength(2);
+    expect(reconcileAt).toBeDefined();
+    expect(reconcileAt!.getTime()).toBeLessThanOrEqual(third + 15 * 60_000);
+
+    // The scheduled reconcile releases the dead attempts and restores the watch.
+    expect(await googleDriveChanges.reconcile(context(reconcileAt!))).toEqual({ outcome: "ready" });
+    expect(watchAttempts).toBe(3);
+    expect(subscription.channels).toEqual(
+      expect.arrayContaining([expect.objectContaining({ resourceId: "remote-resource", state: "active" })]),
+    );
+  });
+
   it.each<Record<string, JsonValue>>([{}, { maxRecordsPerPoll: 37 }, { maxRecordsPerPoll: 1000 }])(
     "drains Airtable backlog within the page budget with %j",
     async (limits) => {
