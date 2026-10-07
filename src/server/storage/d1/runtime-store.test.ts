@@ -666,7 +666,20 @@ class SweepingD1Database implements D1DatabaseBinding {
   }
 
   async batch(statements: D1PreparedStatementBinding[]): Promise<{ results: Record<string, unknown>[] | null }[]> {
-    return await this.database.batch(statements);
+    // Sweep after a conflicting batched insert too, before the caller can issue
+    // any standalone lookup. Otherwise a claim that leaves its select outside
+    // the transaction would still pass this test while keeping the race.
+    const insertIndex = statements.findIndex(
+      (statement) =>
+        statement instanceof SweepingPreparedStatement &&
+        this.sweepKeyHash !== undefined &&
+        statement.insertKeyHash() === this.sweepKeyHash,
+    );
+    const results = await this.database.batch(statements);
+    if (insertIndex !== -1 && (results[insertIndex]?.results?.length ?? 0) === 0) {
+      await this.sweepAfterInsertConflict(String(this.sweepKeyHash));
+    }
+    return results;
   }
 
   async sweepAfterInsertConflict(keyHash: string): Promise<void> {
@@ -706,6 +719,11 @@ class SweepingPreparedStatement implements D1PreparedStatementBinding {
 
   all<T = Record<string, unknown>>(): Promise<{ results: T[] }> {
     return this.statement.all<T>();
+  }
+
+  /** The key this statement would insert, when it is an idempotency insert. */
+  insertKeyHash(): string | undefined {
+    return this.query.includes("insert into idempotency_records") ? String(this.values[0]) : undefined;
   }
 
   async run(): Promise<{ success: boolean; meta: { changes?: number } }> {
