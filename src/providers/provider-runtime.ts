@@ -1256,6 +1256,9 @@ export async function uploadProviderUrlToTransitFile(
       signal: context.signal,
     });
   } catch (error) {
+    if (isAbortLikeError(error) || isAbortSignalError(context.signal, error)) {
+      throw new ProviderRequestError(504, `${input.source} transit download timed out`);
+    }
     throw new ProviderRequestError(
       502,
       error instanceof Error

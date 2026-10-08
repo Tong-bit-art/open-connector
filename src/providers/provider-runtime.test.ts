@@ -23,6 +23,7 @@ import {
   requiredResponseRecord,
   runProviderRequest,
   toProviderExecutionError,
+  uploadProviderUrlToTransitFile,
 } from "./provider-runtime.ts";
 
 afterEach(() => {
@@ -145,6 +146,21 @@ describe("readProviderErrorTextBody", () => {
     await expect(
       runProviderRequest({ label: "provider" }, async () => readProviderJson(abortingErrorResponse(), "provider")),
     ).rejects.toMatchObject({ status: 504, message: "provider request timed out" });
+  });
+});
+
+describe("uploadProviderUrlToTransitFile", () => {
+  it("maps an aborted transit download to a timeout", async () => {
+    const fetcher = vi.fn(async () => {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    });
+
+    await expect(
+      uploadProviderUrlToTransitFile(
+        { url: "https://files.example.com/report.pdf", name: "report.pdf", source: "Example" },
+        { fetcher, transitFiles: { maxBytes: 1024 } as never, signal: undefined },
+      ),
+    ).rejects.toMatchObject({ status: 504, message: "Example transit download timed out" });
   });
 });
 
