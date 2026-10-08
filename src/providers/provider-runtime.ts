@@ -1297,7 +1297,7 @@ export async function uploadProviderUrlToTransitFile(
       signal: context.signal,
     }),
   );
-  const upload = await context.transitFiles.create(new File([Uint8Array.from(bytes)], input.name, { type: mimeType }));
+  const upload = await transitFiles.create(new File([Uint8Array.from(bytes)], input.name, { type: mimeType }));
   return {
     fileId: upload.fileId,
     downloadUrl: upload.downloadUrl,
