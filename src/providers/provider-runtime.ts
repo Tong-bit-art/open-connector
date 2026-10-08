@@ -1107,7 +1107,7 @@ export async function readProviderErrorTextBody(
   signal?: AbortSignal,
 ): Promise<string> {
   try {
-    return await readProviderTextBody(response, fieldName, defaultProviderErrorMaxResponseBytes);
+    return await readProviderTextBody(response, fieldName, defaultProviderErrorMaxResponseBytes, signal);
   } catch (error) {
     // A size-limit or broken-body failure degrades to the fallback message, but
     // a timeout, abort, or the caller's own abort reason must keep propagating
@@ -1201,11 +1201,13 @@ export async function readProviderTextBody(
   response: Response,
   fieldName: string,
   maxBytes: number = defaultProviderJsonMaxResponseBytes,
+  signal?: AbortSignal,
 ): Promise<string> {
   const bytes = await readBoundedResponseBytes(response, {
     maxBytes,
     fieldName,
     createError: (message) => new ProviderRequestError(413, message),
+    signal,
   });
   return new TextDecoder().decode(bytes);
 }

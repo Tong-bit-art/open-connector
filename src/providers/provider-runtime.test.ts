@@ -208,6 +208,32 @@ describe("uploadProviderUrlToTransitFile", () => {
     ).rejects.toMatchObject({ status: 504, message: "Example transit download timed out" });
   });
 
+  it("cancels a pending error-body read through the caller signal", async () => {
+    const reason = new Error("runtime shutting down");
+    const controller = new AbortController();
+    const reading = Promise.withResolvers<void>();
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull() {
+              reading.resolve();
+            },
+          }),
+          { status: 500 },
+        ),
+    );
+    const pending = uploadProviderUrlToTransitFile(
+      { url: "https://files.example.com/report.pdf", name: "report.pdf", source: "Example" },
+      { fetcher, transitFiles: { maxBytes: 1024 } as never, signal: controller.signal },
+    );
+
+    await reading.promise;
+    controller.abort(reason);
+
+    await expect(pending).rejects.toMatchObject({ status: 504, message: "Example transit download timed out" });
+  }, 1_000);
+
   it("aborts the transit body read through the caller signal", async () => {
     const controller = new AbortController();
     const reading = Promise.withResolvers<void>();
