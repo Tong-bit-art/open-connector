@@ -1245,6 +1245,7 @@ export async function uploadProviderUrlToTransitFile(
   if (!context.transitFiles) {
     return null;
   }
+  const transitFiles = context.transitFiles;
 
   let response: Response;
   try {
@@ -1266,8 +1267,21 @@ export async function uploadProviderUrlToTransitFile(
         : `${input.source} transit download failed`,
     );
   }
+  // An abort that lands after the response headers arrive rejects the body read
+  // outside the fetch catch above, so map it here too.
+  const readTransitBody = async <T>(read: () => Promise<T>): Promise<T> => {
+    try {
+      return await read();
+    } catch (error) {
+      if (isAbortLikeError(error) || isAbortSignalError(context.signal, error)) {
+        throw new ProviderRequestError(504, `${input.source} transit download timed out`);
+      }
+      throw error;
+    }
+  };
+
   if (!response.ok) {
-    const text = await readProviderErrorTextBody(response, `${input.source} error response`);
+    const text = await readTransitBody(() => readProviderErrorTextBody(response, `${input.source} error response`));
     throw new ProviderRequestError(
       response.status >= 500 ? 502 : response.status,
       text || `${input.source} transit download failed with HTTP ${response.status}`,
@@ -1275,11 +1289,14 @@ export async function uploadProviderUrlToTransitFile(
   }
 
   const mimeType = response.headers.get("content-type") ?? "application/octet-stream";
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
-    fieldName: input.name,
-    createError: (message) => new ProviderRequestError(413, message),
-  });
+  const bytes = await readTransitBody(() =>
+    readBoundedResponseBytes(response, {
+      maxBytes: transitFiles.maxBytes,
+      fieldName: input.name,
+      createError: (message) => new ProviderRequestError(413, message),
+      signal: context.signal,
+    }),
+  );
   const upload = await context.transitFiles.create(new File([Uint8Array.from(bytes)], input.name, { type: mimeType }));
   return {
     fileId: upload.fileId,

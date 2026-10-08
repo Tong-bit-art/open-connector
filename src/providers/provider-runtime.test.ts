@@ -162,6 +162,52 @@ describe("uploadProviderUrlToTransitFile", () => {
       ),
     ).rejects.toMatchObject({ status: 504, message: "Example transit download timed out" });
   });
+
+  it("maps an abort raised while reading the transit body to a timeout", async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new DOMException("The operation was aborted.", "AbortError"));
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+
+    await expect(
+      uploadProviderUrlToTransitFile(
+        { url: "https://files.example.com/report.pdf", name: "report.pdf", source: "Example" },
+        { fetcher, transitFiles: { maxBytes: 1024 } as never, signal: undefined },
+      ),
+    ).rejects.toMatchObject({ status: 504, message: "Example transit download timed out" });
+  });
+
+  it("aborts the transit body read through the caller signal", async () => {
+    const controller = new AbortController();
+    const reading = Promise.withResolvers<void>();
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull() {
+              reading.resolve();
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    const pending = uploadProviderUrlToTransitFile(
+      { url: "https://files.example.com/report.pdf", name: "report.pdf", source: "Example" },
+      { fetcher, transitFiles: { maxBytes: 1024 } as never, signal: controller.signal },
+    );
+
+    await reading.promise;
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ status: 504, message: "Example transit download timed out" });
+  }, 1_000);
 });
 
 describe("defineProviderExecutors", () => {
