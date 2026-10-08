@@ -13,7 +13,9 @@ const skippedFileNames = new Set(["test-helpers.ts"]);
 // keeps the guard fast; every file holding a literal schema pattern today
 // matches one of the shapes.
 const schemaModuleName = /(^|[-_.])actions?([-_.]|$)|schema|operations|tool|(^|[-_])trigger-.*\.definition\.ts$/;
-const patternLiteral = /\bpattern:\s*"((?:[^"\\]|\\.)*)"/g;
+// A schema pattern appears either as a `pattern` property value or as the first
+// argument of `s.stringPattern("...")`.
+const patternLiteral = /(?:\bpattern:\s*|\bs\.stringPattern\(\s*)"((?:[^"\\]|\\.)*)"/g;
 // The tree holds hundreds of schema modules and patterns. Floors fail loudly if
 // the walk or the scanner stops matching anything and the guard quietly starts
 // protecting nothing.
