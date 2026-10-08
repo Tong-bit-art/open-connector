@@ -1101,13 +1101,20 @@ export function setSearchParams(url: URL, query: Record<string, string | undefin
 /**
  * Read a bounded provider error response body as text.
  */
-export async function readProviderErrorTextBody(response: Response, fieldName: string): Promise<string> {
+export async function readProviderErrorTextBody(
+  response: Response,
+  fieldName: string,
+  signal?: AbortSignal,
+): Promise<string> {
   try {
     return await readProviderTextBody(response, fieldName, defaultProviderErrorMaxResponseBytes);
   } catch (error) {
     // A size-limit or broken-body failure degrades to the fallback message, but
-    // a timeout or abort must keep propagating so runProviderRequest reports 504
-    // instead of the upstream status the body read was interrupted for.
+    // a timeout, abort, or the caller's own abort reason must keep propagating
+    // so runProviderRequest reports 504 instead of the upstream status the body
+    // read was interrupted for. `AbortSignal.abort(reason)` accepts arbitrary
+    // reasons, which `isAbortLikeError` alone cannot recognize.
+    if (signal?.aborted) throw signal.reason;
     if (isAbortLikeError(error)) throw error;
     return "";
   }
@@ -1281,7 +1288,9 @@ export async function uploadProviderUrlToTransitFile(
   };
 
   if (!response.ok) {
-    const text = await readTransitBody(() => readProviderErrorTextBody(response, `${input.source} error response`));
+    const text = await readTransitBody(() =>
+      readProviderErrorTextBody(response, `${input.source} error response`, context.signal),
+    );
     throw new ProviderRequestError(
       response.status >= 500 ? 502 : response.status,
       text || `${input.source} transit download failed with HTTP ${response.status}`,
