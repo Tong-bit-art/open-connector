@@ -231,6 +231,39 @@ describe("renderActionMarkdown", () => {
     expect("folderId" in discriminated).toBe(true);
   });
 
+  it("generates an example that satisfies merged allOf, format bounds, and item bounds", () => {
+    const allOfProperty = expectValidExample("allOf member property constraint", {
+      type: "object",
+      required: ["name"],
+      properties: { name: { type: "string" } },
+      allOf: [{ properties: { name: { type: "string", minLength: 1 } } }],
+    });
+    expect(allOfProperty.name).not.toBe("");
+
+    const email = expectValidExample("formatted string length bounds", {
+      type: "object",
+      properties: { email: { type: "string", format: "email", minLength: 17, maxLength: 17 } },
+      required: ["email"],
+    });
+    expect((email.email as string).length).toBe(17);
+
+    const uri = expectValidExample("formatted uri minimum length", {
+      type: "object",
+      properties: { callback: { type: "string", format: "uri", minLength: 24 } },
+      required: ["callback"],
+    });
+    expect((uri.callback as string).length).toBe(24);
+
+    const scores = expectValidExample("unique numeric items with a minimum", {
+      type: "object",
+      properties: {
+        scores: { type: "array", items: { type: "integer", minimum: 10 }, minItems: 2, uniqueItems: true },
+      },
+      required: ["scores"],
+    });
+    expect(scores.scores).toEqual([10, 11]);
+  });
+
   it("renders the current execution policy decision and decisive rule", () => {
     const markdown = renderActionMarkdown(action, {
       transport: { kind: "mcp" },

@@ -324,9 +324,10 @@ const exampleStringFormats: Record<string, string> = {
 };
 
 function buildExampleInput(schema: JsonSchema): Record<string, unknown> {
-  const properties = readSchemaProperties(schema);
+  const seedSchema = mergeAllOfPropertySchemas(schema);
+  const properties = readSchemaProperties(seedSchema);
   const input: Record<string, unknown> = {};
-  seedObjectRequirements(schema, properties, input);
+  seedObjectRequirements(seedSchema, properties, input);
   if (Array.isArray(schema.allOf)) {
     for (const member of schema.allOf) {
       if (isSchemaObject(member)) {
@@ -334,7 +335,7 @@ function buildExampleInput(schema: JsonSchema): Record<string, unknown> {
       }
     }
   }
-  fillMinProperties(schema, properties, input);
+  fillMinProperties(seedSchema, properties, input);
   if (Array.isArray(schema.allOf)) {
     for (const member of schema.allOf) {
       if (isSchemaObject(member)) {
@@ -343,6 +344,34 @@ function buildExampleInput(schema: JsonSchema): Record<string, unknown> {
     }
   }
   return input;
+}
+
+/**
+ * Same-named property schemas from `allOf` members apply together with the root
+ * schema, so merge their constraints before seeding a required property: a
+ * member that adds `minLength` must not be skipped because the root seeded the
+ * value first.
+ */
+function mergeAllOfPropertySchemas(schema: JsonSchema): JsonSchema {
+  if (!Array.isArray(schema.allOf)) {
+    return schema;
+  }
+  const properties: Record<string, JsonSchema> = { ...readSchemaProperties(schema) };
+  let merged = false;
+  for (const member of schema.allOf) {
+    if (!isSchemaObject(member)) {
+      continue;
+    }
+    for (const [name, memberProperty] of Object.entries(readSchemaProperties(member))) {
+      if (!isSchemaObject(memberProperty)) {
+        continue;
+      }
+      const parentProperty = properties[name];
+      properties[name] = isSchemaObject(parentProperty) ? { ...parentProperty, ...memberProperty } : memberProperty;
+      merged = true;
+    }
+  }
+  return merged ? { ...schema, properties } : schema;
 }
 
 /** Raise the object to its `minProperties` with named properties first, then placeholder map keys. */
@@ -568,16 +597,42 @@ function conflictsWithParent(schema: JsonSchema, branch: JsonSchema): boolean {
 }
 
 function stringExample(schema: JsonSchema): string {
-  if (typeof schema.format === "string") {
-    return exampleStringFormats[schema.format] ?? "string";
-  }
   const minLength = typeof schema.minLength === "number" && schema.minLength > 0 ? schema.minLength : 0;
+  const maxLength = typeof schema.maxLength === "number" ? schema.maxLength : undefined;
+  if (typeof schema.format === "string") {
+    return formatStringExample(schema.format, minLength, maxLength);
+  }
   if (minLength === 0 && typeof schema.pattern !== "string") {
     return "";
   }
-  const maxLength = typeof schema.maxLength === "number" ? schema.maxLength : undefined;
   const length = Math.min(Math.max(1, minLength || 1), maxLength ?? Number.POSITIVE_INFINITY);
   return length <= 0 ? "" : "a".repeat(Math.min(length, Math.max(64, minLength)));
+}
+
+/**
+ * A fixed format sample may be shorter than `minLength`; extend the formats that
+ * accept arbitrary length (email local part, URI path, hostname label) so the
+ * example still satisfies the schema's own bounds.
+ */
+function formatStringExample(format: string, minLength: number, maxLength: number | undefined): string {
+  const sample = exampleStringFormats[format] ?? "string";
+  const target = Math.max(minLength, sample.length);
+  if (target === sample.length || (maxLength !== undefined && target > maxLength)) {
+    // Bounds that exclude every length the sample can take leave no better value.
+    return sample;
+  }
+  if (format === "email") {
+    const domain = "@example.com";
+    return `${"a".repeat(Math.max(1, target - domain.length))}${domain}`;
+  }
+  if (format === "uri" || format === "url") {
+    return `${sample}/${"a".repeat(target - sample.length - 1)}`;
+  }
+  if (format === "hostname") {
+    const domain = ".example.com";
+    return `${"a".repeat(Math.max(1, target - domain.length))}${domain}`;
+  }
+  return sample;
 }
 
 function numberExample(schema: JsonSchema): number {
@@ -628,7 +683,8 @@ function arrayExample(schema: JsonSchema): unknown[] {
       return values.map((_, index) => String.fromCharCode(97 + index));
     }
     if (itemSchema?.type === "integer" || itemSchema?.type === "number") {
-      return values.map((_, index) => index + 1);
+      const first = numberExample(itemSchema);
+      return values.map((_, index) => numberExample({ ...itemSchema, minimum: first + index }));
     }
   }
   return values;
