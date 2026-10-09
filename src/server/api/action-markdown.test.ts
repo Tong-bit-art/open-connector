@@ -262,6 +262,22 @@ describe("renderActionMarkdown", () => {
       required: ["scores"],
     });
     expect(scores.scores).toEqual([10, 11]);
+
+    const hostname = expectValidExample("hostname with a long minimum", {
+      type: "object",
+      properties: { host: { type: "string", format: "hostname", minLength: 80 } },
+      required: ["host"],
+    });
+    const labels = (hostname.host as string).split(".");
+    expect(labels.every((label) => label.length <= 63)).toBe(true);
+    expect((hostname.host as string).length).toBeGreaterThanOrEqual(80);
+
+    const tags = expectValidExample("unique string items with a minimum length", {
+      type: "object",
+      properties: { tags: { type: "array", items: { type: "string", minLength: 2 }, minItems: 2, uniqueItems: true } },
+      required: ["tags"],
+    });
+    expect(tags.tags).toEqual(["aa", "bb"]);
   });
 
   it("renders the current execution policy decision and decisive rule", () => {

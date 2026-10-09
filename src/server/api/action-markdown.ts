@@ -316,6 +316,7 @@ const exampleStringFormats: Record<string, string> = {
   date: "2000-01-01",
   "date-time": "2000-01-01T00:00:00Z",
   email: "user@example.com",
+  hostname: "example.com",
   ipv4: "192.0.2.1",
   ipv6: "2001:db8::1",
   uri: "https://example.com",
@@ -629,10 +630,25 @@ function formatStringExample(format: string, minLength: number, maxLength: numbe
     return `${sample}/${"a".repeat(target - sample.length - 1)}`;
   }
   if (format === "hostname") {
-    const domain = ".example.com";
-    return `${"a".repeat(Math.max(1, target - domain.length))}${domain}`;
+    return hostnameExample(target);
   }
   return sample;
+}
+
+/** DNS labels are limited to 63 characters; spread the target length across dot-separated labels. */
+function hostnameExample(length: number): string {
+  if (length <= 63) {
+    return "a".repeat(Math.max(1, length));
+  }
+  const labelCount = Math.ceil((length + 1) / 64);
+  let remaining = length - (labelCount - 1);
+  const labels: string[] = [];
+  for (let index = 0; index < labelCount; index += 1) {
+    const labelLength = Math.min(63, remaining - (labelCount - 1 - index));
+    labels.push("a".repeat(Math.max(1, labelLength)));
+    remaining -= labelLength;
+  }
+  return labels.join(".");
 }
 
 function numberExample(schema: JsonSchema): number {
@@ -680,7 +696,10 @@ function arrayExample(schema: JsonSchema): unknown[] {
   const distinct = new Set(values.map((value) => JSON.stringify(value))).size === values.length;
   if (schema.uniqueItems === true && values.length > 1 && !distinct) {
     if (itemSchema?.type === "string") {
-      return values.map((_, index) => String.fromCharCode(97 + index));
+      const minLength = typeof itemSchema.minLength === "number" && itemSchema.minLength > 0 ? itemSchema.minLength : 1;
+      const maxLength = typeof itemSchema.maxLength === "number" ? itemSchema.maxLength : undefined;
+      const length = Math.max(1, Math.min(minLength, maxLength ?? Number.POSITIVE_INFINITY));
+      return values.map((_, index) => String.fromCharCode(97 + index).repeat(length));
     }
     if (itemSchema?.type === "integer" || itemSchema?.type === "number") {
       const first = numberExample(itemSchema);
