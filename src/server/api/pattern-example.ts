@@ -34,28 +34,29 @@ const maximumSampleLength = 512;
  * reaches the schema's minimum, when the pattern allows it.
  */
 export function samplePattern(pattern: string, options: { minLength?: number } = {}): string | undefined {
-  let root: PatternNode;
   try {
-    root = new PatternParser(pattern).parse();
+    const root = new PatternParser(pattern).parse();
+    const minLength = Math.min(options.minLength ?? 0, maximumSampleLength);
+    const growth = new Map<PatternNode, number>();
+    const budget = { remaining: maximumSampleLength };
+    let sample = generateSample(root, minLength, growth, budget);
+    const growthLimit = minLength * 2 + 8;
+    for (let step = 0; sample.length < minLength && step < growthLimit; step += 1) {
+      const growable = findGrowable(root, growth);
+      if (!growable) {
+        break;
+      }
+      growth.set(growable, (growth.get(growable) ?? 0) + 1);
+      budget.remaining = maximumSampleLength;
+      sample = generateSample(root, minLength, growth, budget);
+    }
+    if (sample.length > maximumSampleLength) {
+      return undefined;
+    }
+    return matchesPattern(pattern, sample) ? sample : undefined;
   } catch {
     return undefined;
   }
-  const minLength = Math.min(options.minLength ?? 0, maximumSampleLength);
-  const growth = new Map<PatternNode, number>();
-  let sample = generateSample(root, minLength, growth);
-  const growthLimit = minLength * 2 + 8;
-  for (let step = 0; sample.length < minLength && step < growthLimit; step += 1) {
-    const growable = findGrowable(root, growth);
-    if (!growable) {
-      break;
-    }
-    growth.set(growable, (growth.get(growable) ?? 0) + 1);
-    sample = generateSample(root, minLength, growth);
-  }
-  if (sample.length > maximumSampleLength) {
-    return undefined;
-  }
-  return matchesPattern(pattern, sample) ? sample : undefined;
 }
 
 function matchesPattern(pattern: string, sample: string): boolean {
@@ -67,24 +68,56 @@ function matchesPattern(pattern: string, sample: string): boolean {
   }
 }
 
-function generateSample(node: PatternNode, targetLength: number, growth: Map<PatternNode, number>): string {
+function generateSample(
+  node: PatternNode,
+  targetLength: number,
+  growth: Map<PatternNode, number>,
+  budget: { remaining: number },
+): string {
   switch (node.kind) {
-    case "literal":
+    case "literal": {
+      if (node.value.length > budget.remaining) {
+        throw new PatternTooLongError();
+      }
+      budget.remaining -= node.value.length;
       return node.value;
+    }
     case "sequence":
-      return node.nodes.map((child) => generateSample(child, targetLength, growth)).join("");
+      return node.nodes.map((child) => generateSample(child, targetLength, growth, budget)).join("");
     case "alternation": {
       // Prefer the shortest branch that already reaches the target, so a
       // minimum length can pick a longer alternative instead of failing.
-      const samples = node.branches.map((branch) => generateSample(branch, targetLength, growth));
+      const start = budget.remaining;
+      const samples: string[] = [];
+      for (const branch of node.branches) {
+        budget.remaining = start;
+        try {
+          samples.push(generateSample(branch, targetLength, growth, budget));
+        } catch (error) {
+          if (!(error instanceof PatternTooLongError)) {
+            throw error;
+          }
+        }
+      }
+      if (samples.length === 0) {
+        throw new PatternTooLongError();
+      }
       const longEnough = samples.filter((candidate) => candidate.length >= targetLength);
-      return (longEnough.length > 0 ? longEnough : samples).reduce((best, candidate) =>
+      const chosen = (longEnough.length > 0 ? longEnough : samples).reduce((best, candidate) =>
         candidate.length < best.length ? candidate : best,
       );
+      budget.remaining = start - chosen.length;
+      return chosen;
     }
     case "repeat": {
       const count = Math.min(node.max, node.min + (growth.get(node) ?? 0));
-      return generateSample(node.node, 0, growth).repeat(count);
+      const atom = generateSample(node.node, 0, growth, { remaining: maximumSampleLength });
+      const total = atom.length * count;
+      if (total > budget.remaining) {
+        throw new PatternTooLongError();
+      }
+      budget.remaining -= total;
+      return atom.repeat(count);
     }
   }
 }
@@ -114,10 +147,12 @@ function findGrowable(node: PatternNode, growth: Map<PatternNode, number>): Patt
       if (node.min + (growth.get(node) ?? 0) >= node.max) {
         return undefined;
       }
-      return generateSample(node.node, 0, growth).length > 0 ? node : undefined;
+      return generateSample(node.node, 0, growth, { remaining: maximumSampleLength }).length > 0 ? node : undefined;
     }
   }
 }
+
+class PatternTooLongError extends Error {}
 
 class PatternParser {
   private readonly pattern: string;

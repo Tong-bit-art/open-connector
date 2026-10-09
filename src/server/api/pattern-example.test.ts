@@ -81,4 +81,11 @@ describe("samplePattern", () => {
     expect(samplePattern("^a{2,1}$")).toBeUndefined();
     expect(samplePattern("[")).toBeUndefined();
   });
+
+  it("refuses repeats that would allocate beyond the sample bound", () => {
+    expect(samplePattern("^a{99999999999}$")).toBeUndefined();
+    expect(samplePattern("^(?:a{100000}){100000}$")).toBeUndefined();
+    expect(samplePattern("^\\d{100000000}$")).toBeUndefined();
+    expect(samplePattern("^(a{600}|b)$")).toBe("b");
+  });
 });
