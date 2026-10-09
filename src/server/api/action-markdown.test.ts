@@ -172,6 +172,65 @@ describe("renderActionMarkdown", () => {
     expect(Object.keys(map.attributes as Record<string, unknown>).length).toBeGreaterThanOrEqual(1);
   });
 
+  it("generates an example that satisfies tuple, bound, and discriminator constraints", () => {
+    const bounded = expectValidExample("combined numeric bounds", {
+      type: "object",
+      properties: { value: { type: "number", minimum: 0, exclusiveMinimum: 2, maximum: 3 } },
+      required: ["value"],
+    });
+    expect(bounded.value).toBeGreaterThan(2);
+
+    const integer = expectValidExample("combined integer bounds", {
+      type: "object",
+      properties: { value: { type: "integer", minimum: 0, exclusiveMinimum: 2, maximum: 3 } },
+      required: ["value"],
+    });
+    expect(integer.value).toBe(3);
+
+    const tuple = expectValidExample("tuple filled to minItems", {
+      type: "object",
+      properties: {
+        pair: { type: "array", prefixItems: [{ type: "string" }], items: { type: "string" }, minItems: 2 },
+      },
+      required: ["pair"],
+    });
+    expect((tuple.pair as unknown[]).length).toBe(2);
+
+    const long = expectValidExample("minItems beyond the display cap", {
+      type: "object",
+      properties: { ids: { type: "array", items: { type: "string" }, minItems: 5 } },
+      required: ["ids"],
+    });
+    expect((long.ids as unknown[]).length).toBe(5);
+
+    const longString = expectValidExample("minLength beyond the display cap", {
+      type: "object",
+      properties: { token: { type: "string", minLength: 100 } },
+      required: ["token"],
+    });
+    expect((longString.token as string).length).toBe(100);
+
+    const minProperties = expectValidExample("minProperties with named and additional properties", {
+      type: "object",
+      properties: { name: { type: "string" } },
+      additionalProperties: { type: "string" },
+      minProperties: 2,
+    });
+    expect(Object.keys(minProperties).length).toBe(2);
+
+    const discriminated = expectValidExample("discriminated oneOf branch", {
+      type: "object",
+      required: ["kind"],
+      properties: { kind: { const: "folder" } },
+      oneOf: [
+        { required: ["fileId"], properties: { kind: { const: "file" }, fileId: { type: "string" } } },
+        { required: ["folderId"], properties: { kind: { const: "folder" }, folderId: { type: "string" } } },
+      ],
+    });
+    expect(discriminated.kind).toBe("folder");
+    expect("folderId" in discriminated).toBe(true);
+  });
+
   it("renders the current execution policy decision and decisive rule", () => {
     const markdown = renderActionMarkdown(action, {
       transport: { kind: "mcp" },

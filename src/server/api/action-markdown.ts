@@ -334,7 +334,48 @@ function buildExampleInput(schema: JsonSchema): Record<string, unknown> {
       }
     }
   }
+  fillMinProperties(schema, properties, input);
+  if (Array.isArray(schema.allOf)) {
+    for (const member of schema.allOf) {
+      if (isSchemaObject(member)) {
+        fillMinProperties(member, { ...properties, ...readSchemaProperties(member) }, input);
+      }
+    }
+  }
   return input;
+}
+
+/** Raise the object to its `minProperties` with named properties first, then placeholder map keys. */
+function fillMinProperties(
+  schema: JsonSchema,
+  properties: Record<string, JsonSchema>,
+  input: Record<string, unknown>,
+): void {
+  const minProperties = typeof schema.minProperties === "number" ? schema.minProperties : 0;
+  if (minProperties === 0) {
+    return;
+  }
+  for (const name of Object.keys(properties)) {
+    if (Object.keys(input).length >= minProperties) {
+      break;
+    }
+    if (!(name in input)) {
+      input[name] = exampleValue(properties[name]);
+    }
+  }
+  if (isSchemaObject(schema.additionalProperties)) {
+    // A map-shaped object such as attributes or records reaches minProperties
+    // only through its additional properties; placeholder keys fill the deficit
+    // while still matching the outer schema. Bounded so a property named like a
+    // placeholder cannot loop forever.
+    for (let index = 0; Object.keys(input).length < minProperties && index < minProperties + 10; index += 1) {
+      const name = index === 0 ? "key" : `key${index + 1}`;
+      if (name in input) {
+        continue;
+      }
+      input[name] = exampleValue(schema.additionalProperties);
+    }
+  }
 }
 
 /** Seed every property requirement an object schema (or one `allOf` member) declares. */
@@ -362,7 +403,9 @@ function seedRequirementBranches(
   if (!Array.isArray(branches)) {
     return;
   }
-  const candidates = branches.filter(isSchemaObject).filter((branch) => branch.type !== "null");
+  const candidates = branches
+    .filter(isSchemaObject)
+    .filter((branch) => branch.type !== "null" && !conflictsWithParent(schema, branch));
   const isOneOf = Array.isArray(schema.oneOf);
   if (isOneOf) {
     const alreadySatisfied = candidates.some((branch) => {
@@ -496,11 +539,32 @@ function firstActionableBranch(schema: JsonSchema): JsonSchema | undefined {
     return undefined;
   }
   for (const branch of branches) {
-    if (branch && typeof branch === "object" && !Array.isArray(branch) && (branch as JsonSchema).type !== "null") {
-      return mergeBranch(schema, branch as JsonSchema);
+    if (isSchemaObject(branch) && branch.type !== "null" && !conflictsWithParent(schema, branch)) {
+      return mergeBranch(schema, branch);
     }
   }
   return mergeBranch(schema, { type: "null" });
+}
+
+/**
+ * A branch that pins a property the parent already pins with `const` to another
+ * value can never match; a discriminated `oneOf` relies on this.
+ */
+function conflictsWithParent(schema: JsonSchema, branch: JsonSchema): boolean {
+  const parentProperties = readSchemaProperties(schema);
+  for (const [name, branchProperty] of Object.entries(readSchemaProperties(branch))) {
+    const parentProperty = parentProperties[name];
+    if (
+      isSchemaObject(branchProperty) &&
+      isSchemaObject(parentProperty) &&
+      branchProperty.const !== undefined &&
+      parentProperty.const !== undefined &&
+      branchProperty.const !== parentProperty.const
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function stringExample(schema: JsonSchema): string {
@@ -513,41 +577,61 @@ function stringExample(schema: JsonSchema): string {
   }
   const maxLength = typeof schema.maxLength === "number" ? schema.maxLength : undefined;
   const length = Math.min(Math.max(1, minLength || 1), maxLength ?? Number.POSITIVE_INFINITY);
-  return length <= 0 ? "" : "a".repeat(Math.min(length, 64));
+  return length <= 0 ? "" : "a".repeat(Math.min(length, Math.max(64, minLength)));
 }
 
 function numberExample(schema: JsonSchema): number {
-  const minimum = typeof schema.minimum === "number" ? Math.ceil(schema.minimum) : undefined;
-  const exclusiveMinimum =
-    typeof schema.exclusiveMinimum === "number" ? Math.floor(schema.exclusiveMinimum) + 1 : undefined;
-  const candidate = minimum ?? exclusiveMinimum ?? 1;
-  const maximum = typeof schema.maximum === "number" ? Math.floor(schema.maximum) : undefined;
-  const exclusiveMaximum =
-    typeof schema.exclusiveMaximum === "number" ? Math.ceil(schema.exclusiveMaximum) - 1 : undefined;
-  const cap = maximum ?? exclusiveMaximum;
-  return cap !== undefined && candidate > cap ? cap : candidate;
+  const integer = schema.type === "integer";
+  const minimum = typeof schema.minimum === "number" ? schema.minimum : undefined;
+  const maximum = typeof schema.maximum === "number" ? schema.maximum : undefined;
+  const exclusiveMinimum = typeof schema.exclusiveMinimum === "number" ? schema.exclusiveMinimum : undefined;
+  const exclusiveMaximum = typeof schema.exclusiveMaximum === "number" ? schema.exclusiveMaximum : undefined;
+  let candidate = 1;
+  if (minimum !== undefined) {
+    candidate = Math.max(candidate, minimum);
+  }
+  if (exclusiveMinimum !== undefined) {
+    candidate = Math.max(candidate, integer ? Math.floor(exclusiveMinimum) + 1 : exclusiveMinimum + 1);
+  }
+  if (maximum !== undefined && candidate > maximum) {
+    candidate = maximum;
+  }
+  if (exclusiveMaximum !== undefined && candidate >= exclusiveMaximum) {
+    candidate = integer ? Math.ceil(exclusiveMaximum) - 1 : exclusiveMaximum - 1;
+  }
+  if (
+    exclusiveMinimum !== undefined &&
+    exclusiveMaximum !== undefined &&
+    candidate <= exclusiveMinimum &&
+    Number.isFinite(exclusiveMinimum) &&
+    Number.isFinite(exclusiveMaximum)
+  ) {
+    // Both exclusive bounds push the candidate outside the interval; a value
+    // between them is the only one that can satisfy both.
+    candidate = (exclusiveMinimum + exclusiveMaximum) / 2;
+  }
+  return integer ? Math.floor(candidate) : candidate;
 }
 
 function arrayExample(schema: JsonSchema): unknown[] {
-  if (Array.isArray(schema.prefixItems)) {
-    return schema.prefixItems.map((item) => exampleValue(item as JsonSchema));
-  }
   const minItems = typeof schema.minItems === "number" && schema.minItems > 0 ? schema.minItems : 0;
-  if (minItems === 0) {
-    return [];
-  }
   const itemSchema = Array.isArray(schema.items) ? undefined : (schema.items as JsonSchema | undefined);
-  const items = Array.from({ length: Math.min(minItems, 3) }, () => exampleValue(itemSchema));
-  const distinct = new Set(items.map((item) => JSON.stringify(item))).size === items.length;
-  if (schema.uniqueItems === true && items.length > 1 && !distinct) {
+  const values = Array.isArray(schema.prefixItems)
+    ? schema.prefixItems.map((item) => exampleValue(item as JsonSchema))
+    : [];
+  while (values.length < minItems) {
+    values.push(exampleValue(itemSchema));
+  }
+  const distinct = new Set(values.map((value) => JSON.stringify(value))).size === values.length;
+  if (schema.uniqueItems === true && values.length > 1 && !distinct) {
     if (itemSchema?.type === "string") {
-      return items.map((_, index) => String.fromCharCode(97 + index));
+      return values.map((_, index) => String.fromCharCode(97 + index));
     }
     if (itemSchema?.type === "integer" || itemSchema?.type === "number") {
-      return items.map((_, index) => index + 1);
+      return values.map((_, index) => index + 1);
     }
   }
-  return items;
+  return values;
 }
 
 function objectExample(schema: JsonSchema): Record<string, unknown> {
@@ -556,23 +640,6 @@ function objectExample(schema: JsonSchema): Record<string, unknown> {
   for (const name of readSchemaRequired(schema)) {
     input[name] = exampleValue(properties[name]);
   }
-  const minProperties = typeof schema.minProperties === "number" ? schema.minProperties : 0;
-  if (Object.keys(input).length < minProperties) {
-    for (const name of Object.keys(properties)) {
-      if (Object.keys(input).length >= minProperties) {
-        break;
-      }
-      if (!(name in input)) {
-        input[name] = exampleValue(properties[name]);
-      }
-    }
-  }
-  if (Object.keys(input).length === 0 && minProperties > 0 && isSchemaObject(schema.additionalProperties)) {
-    // A map-shaped object such as `additionalProperties`-only attributes has no
-    // named properties to seed; a placeholder key still satisfies minProperties.
-    for (let index = 0; index < Math.min(minProperties, 3); index += 1) {
-      input[index === 0 ? "key" : `key${index + 1}`] = exampleValue(schema.additionalProperties);
-    }
-  }
+  fillMinProperties(schema, properties, input);
   return input;
 }
