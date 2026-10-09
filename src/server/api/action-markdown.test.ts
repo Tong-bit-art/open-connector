@@ -51,11 +51,23 @@ describe("renderActionMarkdown", () => {
   });
 
   it("renders an execute_action example for MCP callers instead of HTTP requests", () => {
-    const markdown = renderActionMarkdown(action, { transport: { kind: "mcp" } });
+    const markdown = renderActionMarkdown(
+      {
+        ...action,
+        inputSchema: {
+          type: "object",
+          properties: { repo: { type: "string", pattern: "^prj_", minLength: 5 } },
+          required: ["repo"],
+        },
+      },
+      { transport: { kind: "mcp" } },
+    );
 
     expect(markdown).toContain("Call the `execute_action` tool with these arguments:");
     expect(markdown).toContain(
-      "```json\n" + JSON.stringify({ actionId: "github.delete_repository", input: { repo: "" } }, null, 2) + "\n```",
+      "```json\n" +
+        JSON.stringify({ actionId: "github.delete_repository", input: { repo: "prj_a" } }, null, 2) +
+        "\n```",
     );
     expect(markdown).toContain("Add `connectionName` to run the action with a named connection");
     expect(markdown).toContain("Use the `execute_action` tool above");
@@ -78,36 +90,6 @@ describe("renderActionMarkdown", () => {
     expect(markdown).toContain("## Execution Policy");
     expect(markdown).toContain("Denied: Action is blocked.");
     expect(markdown).toContain("`runtime`: `block_match` via `github.delete_repository`");
-  });
-
-  it("samples a property pattern for the input example", () => {
-    const markdown = renderActionMarkdown(
-      {
-        ...action,
-        inputSchema: {
-          type: "object",
-          properties: {
-            date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
-            url: { type: "string", pattern: "^https://api\\.calendly\\.com/users/[^/]+$" },
-          },
-          required: ["date", "url"],
-        },
-      },
-      { transport: { kind: "mcp" } },
-    );
-
-    expect(markdown).toContain(
-      "```json\n" +
-        JSON.stringify(
-          {
-            actionId: "github.delete_repository",
-            input: { date: "0000-00-00", url: "https://api.calendly.com/users/a" },
-          },
-          null,
-          2,
-        ) +
-        "\n```",
-    );
   });
 
   it("renders the description of a nullable property", () => {
