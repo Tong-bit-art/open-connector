@@ -1,6 +1,7 @@
 import type { ActionDefinition } from "../../core/types.ts";
 
 import { describe, expect, it } from "vitest";
+import { jsonSchema } from "../../core/json-schema.ts";
 import { renderActionMarkdown } from "./action-markdown.ts";
 
 const action: ActionDefinition = {
@@ -77,5 +78,21 @@ describe("renderActionMarkdown", () => {
     expect(markdown).toContain("## Execution Policy");
     expect(markdown).toContain("Denied: Action is blocked.");
     expect(markdown).toContain("`runtime`: `block_match` via `github.delete_repository`");
+  });
+
+  it("renders the description of a nullable property", () => {
+    const markdown = renderActionMarkdown(
+      {
+        ...action,
+        inputSchema: {
+          type: "object",
+          properties: { name: jsonSchema.nullableString("The nullable display name.") },
+          required: ["name"],
+        },
+      },
+      { transport: { kind: "mcp" } },
+    );
+
+    expect(markdown).toContain("The nullable display name.");
   });
 });
