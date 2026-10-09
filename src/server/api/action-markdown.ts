@@ -393,7 +393,7 @@ function fillMinProperties(
       input[name] = exampleValue(properties[name]);
     }
   }
-  if (isSchemaObject(schema.additionalProperties)) {
+  if (schema.additionalProperties !== false) {
     // A map-shaped object such as attributes or records reaches minProperties
     // only through its additional properties; placeholder keys fill the deficit
     // while still matching the outer schema. Bounded so a property named like a
@@ -403,7 +403,7 @@ function fillMinProperties(
       if (name in input) {
         continue;
       }
-      input[name] = exampleValue(schema.additionalProperties);
+      input[name] = exampleValue(isSchemaObject(schema.additionalProperties) ? schema.additionalProperties : undefined);
     }
   }
 }
@@ -429,49 +429,51 @@ function seedRequirementBranches(
   properties: Record<string, JsonSchema>,
   input: Record<string, unknown>,
 ): void {
-  const branches = [schema.anyOf, schema.oneOf].find(Array.isArray);
+  const keyword = Array.isArray(schema.anyOf) ? "anyOf" : "oneOf";
+  const branches = schema[keyword];
   if (!Array.isArray(branches)) {
     return;
   }
   const candidates = branches
     .filter(isSchemaObject)
     .filter((branch) => branch.type !== "null" && !conflictsWithParent(schema, branch));
-  const isOneOf = Array.isArray(schema.oneOf);
-  if (isOneOf) {
-    const alreadySatisfied = candidates.some((branch) => {
-      const required = readSchemaRequired(branch);
-      return required.length > 0 && required.every((name) => name in input);
-    });
-    if (alreadySatisfied) {
-      return;
-    }
-  }
-  for (const branch of candidates) {
-    const merged = mergeBranch(schema, branch);
-    const required = readSchemaRequired(merged);
-    if (required.length === 0) {
-      continue;
-    }
-    const mergedProperties = readSchemaProperties(merged);
-    for (const name of required) {
-      input[name] = exampleValue(mergedProperties[name] ?? properties[name]);
-    }
-    return;
-  }
-  if (!isOneOf) {
-    return;
-  }
-  // A oneOf whose branches only differ by which properties they allow needs a
-  // member of exactly one branch. Seed the first branch so the others, which
-  // either forbid these properties or want their own, cannot also match.
-  const branch = candidates[0];
+  const satisfied =
+    keyword === "oneOf"
+      ? candidates.find((branch) => {
+          const required = readSchemaRequired(branch);
+          return required.length > 0 && required.every((name) => name in input);
+        })
+      : undefined;
+  const branch =
+    satisfied ??
+    (keyword === "oneOf"
+      ? candidates.find(
+          (candidate) =>
+            readSchemaRequired(schema).length > 0 ||
+            readSchemaRequired(candidate).length > 0 ||
+            Array.isArray(candidate.anyOf) ||
+            Array.isArray(candidate.oneOf),
+        )
+      : undefined) ??
+    candidates[0];
   if (!branch) {
     return;
   }
-  const mergedProperties = readSchemaProperties(mergeBranch(schema, branch));
-  for (const name of Object.keys(mergedProperties)) {
+  const merged = mergeBranch(schema, branch, keyword);
+  const mergedProperties = { ...properties, ...readSchemaProperties(merged) };
+  const required = readSchemaRequired(merged);
+  for (const name of required) {
     input[name] = exampleValue(mergedProperties[name]);
   }
+  // Optional properties can distinguish object shapes that would all accept {}.
+  // Nested combinators must select their own requirements before adding fields.
+  if (keyword === "oneOf" && required.length === 0 && !Array.isArray(merged.anyOf) && !Array.isArray(merged.oneOf)) {
+    for (const name of Object.keys(mergedProperties)) {
+      input[name] = exampleValue(mergedProperties[name]);
+    }
+  }
+  seedObjectRequirements(merged, mergedProperties, input);
+  fillMinProperties(merged, mergedProperties, input);
 }
 
 function seedRequiredProperties(
@@ -496,10 +498,12 @@ function isSchemaObject(value: unknown): value is JsonSchema {
  * a branch that only adds `required`/`properties` inherits the parent type. Same
  * named properties are merged so the branch adds constraints instead of
  * replacing the parent's (`format` plus `minLength`, for example). The
- * combinators are dropped so the merged schema is not unwrapped again.
+ * consumed parent combinator is dropped; sibling and branch combinators remain.
  */
-function mergeBranch(schema: JsonSchema, branch: JsonSchema): JsonSchema {
-  const merged = { ...schema, ...branch };
+function mergeBranch(schema: JsonSchema, branch: JsonSchema, keyword: "anyOf" | "oneOf"): JsonSchema {
+  const parent = { ...schema };
+  delete parent[keyword];
+  const merged = { ...parent, ...branch };
   const schemaProperties = readSchemaProperties(schema);
   const branchProperties = readSchemaProperties(branch);
   if (Object.keys(schemaProperties).length > 0 && Object.keys(branchProperties).length > 0) {
@@ -517,8 +521,6 @@ function mergeBranch(schema: JsonSchema, branch: JsonSchema): JsonSchema {
   if (schemaRequired.length > 0 || branchRequired.length > 0) {
     merged.required = [...new Set([...schemaRequired, ...branchRequired])];
   }
-  delete merged.anyOf;
-  delete merged.oneOf;
   return merged;
 }
 
@@ -539,9 +541,12 @@ function exampleValue(schema: JsonSchema | undefined): unknown {
   if (Array.isArray(schema.enum) && schema.enum.length > 0) {
     return schema.enum[0];
   }
+  if (schema.type === "object") {
+    return buildExampleInput(schema);
+  }
   const branch = firstActionableBranch(schema);
   if (branch) {
-    return exampleValue(branch);
+    return branch.type === "object" ? buildExampleInput(schema) : exampleValue(branch);
   }
   const type = Array.isArray(schema.type) ? schema.type.find((entry) => entry !== "null") : schema.type;
   if (type === undefined || type === "null") {
@@ -557,23 +562,24 @@ function exampleValue(schema: JsonSchema | undefined): unknown {
     return arrayExample(schema);
   }
   if (type === "object") {
-    return objectExample(schema);
+    return buildExampleInput(schema);
   }
   return stringExample(schema);
 }
 
 /** Unwrap `anyOf`/`oneOf` wrappers such as nullable fields, choosing the first non-null branch. */
 function firstActionableBranch(schema: JsonSchema): JsonSchema | undefined {
-  const branches = [schema.anyOf, schema.oneOf].find(Array.isArray);
+  const keyword = Array.isArray(schema.anyOf) ? "anyOf" : "oneOf";
+  const branches = schema[keyword];
   if (!Array.isArray(branches)) {
     return undefined;
   }
   for (const branch of branches) {
     if (isSchemaObject(branch) && branch.type !== "null" && !conflictsWithParent(schema, branch)) {
-      return mergeBranch(schema, branch);
+      return mergeBranch(schema, branch, keyword);
     }
   }
-  return mergeBranch(schema, { type: "null" });
+  return mergeBranch(schema, { type: "null" }, keyword);
 }
 
 /**
@@ -707,14 +713,4 @@ function arrayExample(schema: JsonSchema): unknown[] {
     }
   }
   return values;
-}
-
-function objectExample(schema: JsonSchema): Record<string, unknown> {
-  const properties = readSchemaProperties(schema);
-  const input: Record<string, unknown> = {};
-  for (const name of readSchemaRequired(schema)) {
-    input[name] = exampleValue(properties[name]);
-  }
-  fillMinProperties(schema, properties, input);
-  return input;
 }

@@ -280,6 +280,104 @@ describe("renderActionMarkdown", () => {
     expect(tags.tags).toEqual(["aa", "bb"]);
   });
 
+  it("satisfies sibling anyOf and oneOf requirements", () => {
+    expectValidExample("both combinators", {
+      type: "object",
+      properties: {
+        url: { type: "string", format: "uri" },
+        html: { type: "string", minLength: 1 },
+        prompt: { type: "string", minLength: 1 },
+        responseFormat: { type: "object" },
+      },
+      oneOf: [{ required: ["url"] }, { required: ["html"] }],
+      anyOf: [{ required: ["prompt"] }, { required: ["responseFormat"] }],
+    });
+  });
+
+  it("selects a required-property branch without seeding forbidden optional fields", () => {
+    expectValidExample("optional default branch", {
+      type: "object",
+      properties: { chainId: { type: "integer" }, network: { type: "string" } },
+      oneOf: [
+        { not: { anyOf: [{ required: ["chainId"] }, { required: ["network"] }] } },
+        { required: ["chainId"], not: { required: ["network"] } },
+        { required: ["network"], not: { required: ["chainId"] } },
+      ],
+    });
+  });
+
+  it("keeps the first anyOf object candidate when later branches require fields", () => {
+    const text = { type: "object", properties: { text: { type: "string" } }, additionalProperties: false };
+    expectValidExample("array with an optional-field object variant", {
+      type: "object",
+      properties: {
+        content: {
+          type: "array",
+          minItems: 1,
+          contains: text,
+          items: { anyOf: [text, { type: "object", properties: { image: { type: "string" } }, required: ["image"] }] },
+        },
+      },
+      required: ["content"],
+    });
+  });
+
+  it("preserves nested union constraints when selecting a branch", () => {
+    expectValidExample("nested anyOf", {
+      type: "object",
+      properties: {
+        to: {
+          anyOf: [
+            { anyOf: [{ type: "string", minLength: 1 }, { type: "number" }] },
+            { type: "array", items: { type: "string" }, minItems: 1 },
+          ],
+        },
+      },
+      required: ["to"],
+    });
+  });
+
+  it("preserves object requirements inside a selected branch", () => {
+    expectValidExample("nested object combinators", {
+      type: "object",
+      properties: {
+        message: {
+          type: "object",
+          properties: { html: { type: "string" }, text: { type: "string" }, template: { type: "string" } },
+          oneOf: [{ anyOf: [{ required: ["html"] }, { required: ["text"] }] }, { required: ["template"] }],
+        },
+      },
+      required: ["message"],
+    });
+  });
+
+  it("distinguishes nested oneOf object branches without required properties", () => {
+    const example = expectValidExample("nested oneOf shapes", {
+      type: "object",
+      properties: {
+        permission: {
+          oneOf: [
+            { type: "object", properties: { mode: { const: "all" } }, additionalProperties: false },
+            { type: "object", properties: { mode: { const: "none" } }, additionalProperties: false },
+          ],
+        },
+      },
+      required: ["permission"],
+    });
+    expect(example.permission).toEqual({ mode: "all" });
+  });
+
+  it.each([true, undefined])(
+    "fills open maps with minProperties when additionalProperties is %s",
+    (additionalProperties) => {
+      expectValidExample("open map", {
+        type: "object",
+        properties: { filters: { type: "object", additionalProperties, minProperties: 1 } },
+        required: ["filters"],
+      });
+    },
+  );
+
   it("renders the current execution policy decision and decisive rule", () => {
     const markdown = renderActionMarkdown(action, {
       transport: { kind: "mcp" },
