@@ -312,13 +312,141 @@ function isBlockContent(node: DocumentContent): node is BlockContent {
 
 type DocumentContent = BlockContent | DefinitionContent;
 
+const exampleStringFormats: Record<string, string> = {
+  date: "2000-01-01",
+  "date-time": "2000-01-01T00:00:00Z",
+  email: "user@example.com",
+  ipv4: "192.0.2.1",
+  ipv6: "2001:db8::1",
+  uri: "https://example.com",
+  url: "https://example.com",
+  uuid: "00000000-0000-4000-8000-000000000000",
+};
+
 function buildExampleInput(schema: JsonSchema): Record<string, unknown> {
   const properties = readSchemaProperties(schema);
   const input: Record<string, unknown> = {};
-  for (const name of readSchemaRequired(schema)) {
-    input[name] = exampleValue(properties[name]);
+  seedObjectRequirements(schema, properties, input);
+  if (Array.isArray(schema.allOf)) {
+    for (const member of schema.allOf) {
+      if (isSchemaObject(member)) {
+        seedObjectRequirements(member, properties, input);
+      }
+    }
   }
   return input;
+}
+
+/** Seed every property requirement an object schema (or one `allOf` member) declares. */
+function seedObjectRequirements(
+  schema: JsonSchema,
+  properties: Record<string, JsonSchema>,
+  input: Record<string, unknown>,
+): void {
+  seedRequiredProperties(schema, properties, input);
+  seedRequirementBranches(schema, properties, input);
+}
+
+/**
+ * `requireAnyProperty`/`requireExactlyOneProperty` keep every property optional
+ * and add `anyOf`/`oneOf` branches that each require some property, so an example
+ * that only seeds `required` can never match. Seed the properties the first
+ * usable branch asks for, using the branch's own property schemas.
+ */
+function seedRequirementBranches(
+  schema: JsonSchema,
+  properties: Record<string, JsonSchema>,
+  input: Record<string, unknown>,
+): void {
+  const branches = [schema.anyOf, schema.oneOf].find(Array.isArray);
+  if (!Array.isArray(branches)) {
+    return;
+  }
+  const candidates = branches.filter(isSchemaObject).filter((branch) => branch.type !== "null");
+  const isOneOf = Array.isArray(schema.oneOf);
+  if (isOneOf) {
+    const alreadySatisfied = candidates.some((branch) => {
+      const required = readSchemaRequired(branch);
+      return required.length > 0 && required.every((name) => name in input);
+    });
+    if (alreadySatisfied) {
+      return;
+    }
+  }
+  for (const branch of candidates) {
+    const merged = mergeBranch(schema, branch);
+    const required = readSchemaRequired(merged);
+    if (required.length === 0) {
+      continue;
+    }
+    const mergedProperties = readSchemaProperties(merged);
+    for (const name of required) {
+      input[name] = exampleValue(mergedProperties[name] ?? properties[name]);
+    }
+    return;
+  }
+  if (!isOneOf) {
+    return;
+  }
+  // A oneOf whose branches only differ by which properties they allow needs a
+  // member of exactly one branch. Seed the first branch so the others, which
+  // either forbid these properties or want their own, cannot also match.
+  const branch = candidates[0];
+  if (!branch) {
+    return;
+  }
+  const mergedProperties = readSchemaProperties(mergeBranch(schema, branch));
+  for (const name of Object.keys(mergedProperties)) {
+    input[name] = exampleValue(mergedProperties[name]);
+  }
+}
+
+function seedRequiredProperties(
+  schema: JsonSchema,
+  fallbackProperties: Record<string, JsonSchema>,
+  input: Record<string, unknown>,
+): void {
+  const properties = readSchemaProperties(schema);
+  for (const name of readSchemaRequired(schema)) {
+    if (!(name in input)) {
+      input[name] = exampleValue(properties[name] ?? fallbackProperties[name]);
+    }
+  }
+}
+
+function isSchemaObject(value: unknown): value is JsonSchema {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Unwrap one `anyOf`/`oneOf` branch while keeping the wrapper's own keywords, so
+ * a branch that only adds `required`/`properties` inherits the parent type. Same
+ * named properties are merged so the branch adds constraints instead of
+ * replacing the parent's (`format` plus `minLength`, for example). The
+ * combinators are dropped so the merged schema is not unwrapped again.
+ */
+function mergeBranch(schema: JsonSchema, branch: JsonSchema): JsonSchema {
+  const merged = { ...schema, ...branch };
+  const schemaProperties = readSchemaProperties(schema);
+  const branchProperties = readSchemaProperties(branch);
+  if (Object.keys(schemaProperties).length > 0 && Object.keys(branchProperties).length > 0) {
+    const properties: Record<string, JsonSchema> = { ...schemaProperties, ...branchProperties };
+    for (const [name, branchProperty] of Object.entries(branchProperties)) {
+      const parentProperty = schemaProperties[name];
+      if (parentProperty) {
+        properties[name] = { ...parentProperty, ...branchProperty };
+      }
+    }
+    merged.properties = properties;
+  }
+  const schemaRequired = readSchemaRequired(schema);
+  const branchRequired = readSchemaRequired(branch);
+  if (schemaRequired.length > 0 || branchRequired.length > 0) {
+    merged.required = [...new Set([...schemaRequired, ...branchRequired])];
+  }
+  delete merged.anyOf;
+  delete merged.oneOf;
+  return merged;
 }
 
 function readDescription(schema: JsonSchema | undefined): string {
@@ -335,20 +463,116 @@ function exampleValue(schema: JsonSchema | undefined): unknown {
   if (schema.const !== undefined) {
     return schema.const;
   }
-  if (Array.isArray(schema.enum)) {
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
     return schema.enum[0];
   }
-  if (schema.type === "integer" || schema.type === "number") {
-    return 1;
+  const branch = firstActionableBranch(schema);
+  if (branch) {
+    return exampleValue(branch);
   }
-  if (schema.type === "boolean") {
+  const type = Array.isArray(schema.type) ? schema.type.find((entry) => entry !== "null") : schema.type;
+  if (type === undefined || type === "null") {
+    return type === "null" ? null : stringExample(schema);
+  }
+  if (type === "integer" || type === "number") {
+    return numberExample(schema);
+  }
+  if (type === "boolean") {
     return false;
   }
-  if (schema.type === "array") {
+  if (type === "array") {
+    return arrayExample(schema);
+  }
+  if (type === "object") {
+    return objectExample(schema);
+  }
+  return stringExample(schema);
+}
+
+/** Unwrap `anyOf`/`oneOf` wrappers such as nullable fields, choosing the first non-null branch. */
+function firstActionableBranch(schema: JsonSchema): JsonSchema | undefined {
+  const branches = [schema.anyOf, schema.oneOf].find(Array.isArray);
+  if (!Array.isArray(branches)) {
+    return undefined;
+  }
+  for (const branch of branches) {
+    if (branch && typeof branch === "object" && !Array.isArray(branch) && (branch as JsonSchema).type !== "null") {
+      return mergeBranch(schema, branch as JsonSchema);
+    }
+  }
+  return mergeBranch(schema, { type: "null" });
+}
+
+function stringExample(schema: JsonSchema): string {
+  if (typeof schema.format === "string") {
+    return exampleStringFormats[schema.format] ?? "string";
+  }
+  const minLength = typeof schema.minLength === "number" && schema.minLength > 0 ? schema.minLength : 0;
+  if (minLength === 0 && typeof schema.pattern !== "string") {
+    return "";
+  }
+  const maxLength = typeof schema.maxLength === "number" ? schema.maxLength : undefined;
+  const length = Math.min(Math.max(1, minLength || 1), maxLength ?? Number.POSITIVE_INFINITY);
+  return length <= 0 ? "" : "a".repeat(Math.min(length, 64));
+}
+
+function numberExample(schema: JsonSchema): number {
+  const minimum = typeof schema.minimum === "number" ? Math.ceil(schema.minimum) : undefined;
+  const exclusiveMinimum =
+    typeof schema.exclusiveMinimum === "number" ? Math.floor(schema.exclusiveMinimum) + 1 : undefined;
+  const candidate = minimum ?? exclusiveMinimum ?? 1;
+  const maximum = typeof schema.maximum === "number" ? Math.floor(schema.maximum) : undefined;
+  const exclusiveMaximum =
+    typeof schema.exclusiveMaximum === "number" ? Math.ceil(schema.exclusiveMaximum) - 1 : undefined;
+  const cap = maximum ?? exclusiveMaximum;
+  return cap !== undefined && candidate > cap ? cap : candidate;
+}
+
+function arrayExample(schema: JsonSchema): unknown[] {
+  if (Array.isArray(schema.prefixItems)) {
+    return schema.prefixItems.map((item) => exampleValue(item as JsonSchema));
+  }
+  const minItems = typeof schema.minItems === "number" && schema.minItems > 0 ? schema.minItems : 0;
+  if (minItems === 0) {
     return [];
   }
-  if (schema.type === "object") {
-    return {};
+  const itemSchema = Array.isArray(schema.items) ? undefined : (schema.items as JsonSchema | undefined);
+  const items = Array.from({ length: Math.min(minItems, 3) }, () => exampleValue(itemSchema));
+  const distinct = new Set(items.map((item) => JSON.stringify(item))).size === items.length;
+  if (schema.uniqueItems === true && items.length > 1 && !distinct) {
+    if (itemSchema?.type === "string") {
+      return items.map((_, index) => String.fromCharCode(97 + index));
+    }
+    if (itemSchema?.type === "integer" || itemSchema?.type === "number") {
+      return items.map((_, index) => index + 1);
+    }
   }
-  return "";
+  return items;
+}
+
+function objectExample(schema: JsonSchema): Record<string, unknown> {
+  const properties = readSchemaProperties(schema);
+  const input: Record<string, unknown> = {};
+  for (const name of readSchemaRequired(schema)) {
+    input[name] = exampleValue(properties[name]);
+  }
+  const minProperties = typeof schema.minProperties === "number" ? schema.minProperties : 0;
+  if (Object.keys(input).length < minProperties) {
+    for (const name of Object.keys(properties)) {
+      if (Object.keys(input).length >= minProperties) {
+        break;
+      }
+      if (!(name in input)) {
+        input[name] = exampleValue(properties[name]);
+      }
+    }
+  }
+  if (Object.keys(input).length === 0 && minProperties > 0 && isSchemaObject(schema.additionalProperties)) {
+    // A map-shaped object such as `additionalProperties`-only attributes has no
+    // named properties to seed; a placeholder key still satisfies minProperties.
+    for (let index = 0; index < Math.min(minProperties, 3); index += 1) {
+      input[index === 0 ? "key" : `key${index + 1}`] = exampleValue(schema.additionalProperties);
+    }
+  }
+  return input;
 }
