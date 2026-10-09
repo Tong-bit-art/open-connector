@@ -393,4 +393,34 @@ describe("renderActionMarkdown", () => {
     expect(markdown).toContain("Denied: Action is blocked.");
     expect(markdown).toContain("`runtime`: `block_match` via `github.delete_repository`");
   });
+
+  it("samples a property pattern for the input example", () => {
+    const markdown = renderActionMarkdown(
+      {
+        ...action,
+        inputSchema: {
+          type: "object",
+          properties: {
+            date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+            url: { type: "string", pattern: "^https://api\\.calendly\\.com/users/[^/]+$" },
+          },
+          required: ["date", "url"],
+        },
+      },
+      { transport: { kind: "mcp" } },
+    );
+
+    expect(markdown).toContain(
+      "```json\n" +
+        JSON.stringify(
+          {
+            actionId: "github.delete_repository",
+            input: { date: "0000-00-00", url: "https://api.calendly.com/users/a" },
+          },
+          null,
+          2,
+        ) +
+        "\n```",
+    );
+  });
 });

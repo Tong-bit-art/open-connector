@@ -8,6 +8,7 @@ import { gfmFromMarkdown, gfmToMarkdown } from "mdast-util-gfm";
 import { toMarkdown } from "mdast-util-to-markdown";
 import { gfm } from "micromark-extension-gfm";
 import { describeSchemaType, readSchemaProperties, readSchemaRequired } from "../../core/json-schema.ts";
+import { samplePattern } from "./pattern-example.ts";
 
 /** HTTP callers get request examples against the runtime's public origin. */
 interface HttpActionGuideTransport {
@@ -608,6 +609,12 @@ function stringExample(schema: JsonSchema): string {
   const maxLength = typeof schema.maxLength === "number" ? schema.maxLength : undefined;
   if (typeof schema.format === "string") {
     return formatStringExample(schema.format, minLength, maxLength);
+  }
+  if (typeof schema.pattern === "string") {
+    const sample = samplePattern(schema.pattern, { minLength });
+    if (sample !== undefined) {
+      return sample;
+    }
   }
   if (minLength === 0 && typeof schema.pattern !== "string") {
     return "";
