@@ -68,13 +68,20 @@ describe("samplePattern", () => {
     expect(samplePattern("^\\d{2}$", { minLength: 4 })).toBe("00");
   });
 
+  it("pads unanchored patterns without changing anchored matches", () => {
+    expect(samplePattern("^prj_", { minLength: 5 })).toBe("prj_a");
+    expect(samplePattern("\\S", { minLength: 2 })).toBe("aa");
+    expect(samplePattern("^a$", { minLength: 2 })).toBe("a");
+  });
+
+  it("checks lookaheads against a sample without searching", () => {
+    expect(samplePattern("^(?!https?://)[^/]+/.+")).toBe("a/a");
+    expect(samplePattern("^(?=.{1,253}$)[A-Z]+$")).toBe("A");
+    expect(samplePattern("^(?!a)a$")).toBeUndefined();
+    expect(samplePattern("(?<=a)b")).toBeUndefined();
+  });
+
   it("returns undefined for unsupported or invalid patterns", () => {
-    expect(
-      samplePattern(
-        "^(?!.*://)(?!.*\\/)(?:\\\\.)?(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\\\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$",
-      ),
-    ).toBeUndefined();
-    expect(samplePattern("^(?!https?://)[^/]+/.+")).toBeUndefined();
     expect(samplePattern("(a)\\1")).toBeUndefined();
     expect(samplePattern("^\\p{L}+$")).toBeUndefined();
     expect(samplePattern("^[a-")).toBeUndefined();

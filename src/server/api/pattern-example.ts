@@ -5,7 +5,7 @@
  * match it is rejected by the runtime. This module turns the common shapes
  * (digit runs, fixed-width identifiers, dates, times, literal prefixes, and
  * alternations of them) into a short literal that matches, and returns
- * `undefined` for constructs it cannot sample safely (lookarounds,
+ * `undefined` for constructs it cannot sample safely (lookbehind,
  * backreferences, Unicode property escapes) so the caller can fall back.
  */
 
@@ -28,7 +28,7 @@ const maximumSampleLength = 512;
 
 /**
  * Sample a short literal that matches `pattern`, or `undefined` when the
- * pattern uses constructs this sampler does not support.
+ * pattern uses constructs this sampler does not support. Lookaheads are checked against the result, without searching for a match.
  *
  * `minLength` grows unbounded quantifiers (`+`, `*`, `{n,}`) until the sample
  * reaches the schema's minimum, when the pattern allows it.
@@ -49,6 +49,13 @@ export function samplePattern(pattern: string, options: { minLength?: number } =
       growth.set(growable, (growth.get(growable) ?? 0) + 1);
       budget.remaining = maximumSampleLength;
       sample = generateSample(root, minLength, growth, budget);
+    }
+    // Unanchored patterns and prefix patterns can satisfy minLength by padding.
+    if (sample.length < minLength) {
+      const padded = sample.padEnd(minLength, "a");
+      if (matchesPattern(pattern, padded)) {
+        sample = padded;
+      }
     }
     if (sample.length > maximumSampleLength) {
       return undefined;
@@ -204,6 +211,14 @@ class PatternParser {
     }
     if (character === "(") {
       this.index += 1;
+      if (this.pattern.startsWith("?=", this.index) || this.pattern.startsWith("?!", this.index)) {
+        // Assertions contribute no characters. The final regex check still decides
+        // whether the sample is usable; there is no search to satisfy an assertion.
+        this.index += 2;
+        this.parseAlternation();
+        this.expect(")");
+        return { kind: "literal", value: "" };
+      }
       if (this.pattern.startsWith("?:", this.index)) {
         this.index += 2;
       } else if (this.pattern[this.index] === "?") {
