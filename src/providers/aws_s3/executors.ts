@@ -371,6 +371,7 @@ async function awsDownloadObject(input: Record<string, unknown>, context: AwsAct
       mimeType,
       fieldName: "AWS S3 download",
       createError: (message) => new ProviderRequestError(413, message),
+      signal: context.signal,
     });
 
     return {
