@@ -235,6 +235,7 @@ async function downloadFile(
     mimeType,
     fieldName: "Box download",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
   return { item, file };
 }
