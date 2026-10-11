@@ -9,7 +9,7 @@ import {
   requiredRecord,
   requiredString,
 } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import {
   defineOAuthProviderExecutors,
   defineProviderProxy,
@@ -230,12 +230,12 @@ async function downloadFile(
     throw await boxResponseError(response, "Box file download failed");
   }
   const mimeType = response.headers.get("content-type") ?? "application/octet-stream";
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const file = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
     fieldName: "Box download",
     createError: (message) => new ProviderRequestError(413, message),
   });
-  const file = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
   return { item, file };
 }
 
