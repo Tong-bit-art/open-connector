@@ -15,7 +15,7 @@ import {
   requiredString,
   stringArray,
 } from "../../core/cast.ts";
-import { jsonObject, readBoundedResponseBytes } from "../../core/request.ts";
+import { jsonObject, readBoundedResponseBytes, storeResponseInTransit } from "../../core/request.ts";
 import {
   providerInputError,
   ProviderRequestError,
@@ -601,12 +601,13 @@ async function supabaseDownloadStorageObject(
 
   const name = optionalString(input.fileName) ?? defaultStorageObjectName(objectPath);
   const mimeType = optionalString(response.headers.get("content-type")) ?? "application/octet-stream";
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const file = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
     fieldName: "Supabase Storage download",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  const file = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
 
   return {
     fileId: `${bucketId}/${objectPath}`,
