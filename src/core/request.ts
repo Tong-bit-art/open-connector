@@ -163,9 +163,12 @@ export async function storeResponseInTransit(
     createError: options.createError,
     signal: options.signal,
   };
+  // `File.type` lower-cases the MIME type. Normalize here so the streamed path
+  // stores the same value the buffered path does, whatever the server sent.
+  const mimeType = options.mimeType.toLowerCase();
   if (!transitFiles.createFromStream || !response.body) {
     const bytes = await readBoundedResponseBytes(response, limits);
-    return await transitFiles.create(new File([Uint8Array.from(bytes)], options.name, { type: options.mimeType }));
+    return await transitFiles.create(new File([Uint8Array.from(bytes)], options.name, { type: mimeType }));
   }
   options.signal?.throwIfAborted();
   const contentLength = parseContentLength(response.headers.get("content-length"));
@@ -177,7 +180,7 @@ export async function storeResponseInTransit(
     return await transitFiles.createFromStream({
       body: response.body,
       name: options.name.toWellFormed(),
-      mimeType: options.mimeType,
+      mimeType,
       signal: options.signal,
     });
   } catch (error) {

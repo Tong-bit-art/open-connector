@@ -421,6 +421,15 @@ describe("storeResponseInTransit", () => {
     expect(stored.map((s) => [s.via, [...s.bytes]])).toEqual([["file", [4, 5]]]);
   });
 
+  it.each([true, false])("normalizes the mime type the way File does (streaming=%s)", async (streaming) => {
+    const { stored, writer } = store({ maxBytes: 1024, streaming });
+    await storeResponseInTransit(new Response("content"), writer, {
+      ...options,
+      mimeType: "Application/X-NDJSON",
+    });
+    expect(stored[0]?.mimeType).toBe("application/x-ndjson");
+  });
+
   it.each([true, false])(
     "repairs unpaired filename surrogates without changing emoji (streaming=%s)",
     async (streaming) => {
