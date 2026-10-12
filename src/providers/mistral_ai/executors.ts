@@ -12,7 +12,12 @@ import type {
 } from "../provider-runtime.ts";
 
 import { base64Bytes, compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { assertPublicHttpUrl, compactJson, readBoundedResponseBytes } from "../../core/request.ts";
+import {
+  assertPublicHttpUrl,
+  compactJson,
+  readBoundedResponseBytes,
+  storeResponseInTransit,
+} from "../../core/request.ts";
 import {
   defineApiKeyProviderExecutors,
   defineProviderProxy,
@@ -367,12 +372,13 @@ async function downloadMistralFile(input: Record<string, unknown>, context: ApiK
   const fileName = optionalString(metadata?.filename) ?? `${fileId}.bin`;
   const mimeType =
     optionalString(metadata?.mimetype) ?? response.headers.get("content-type") ?? "application/octet-stream";
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const stored = await storeResponseInTransit(response, context.transitFiles, {
+    name: fileName,
+    mimeType,
     fieldName: fileName,
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  const stored = await context.transitFiles.create(new File([Uint8Array.from(bytes)], fileName, { type: mimeType }));
 
   return {
     content: {
