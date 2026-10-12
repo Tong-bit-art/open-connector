@@ -6,7 +6,7 @@ import type { OAuthProviderContext } from "../provider-runtime.ts";
 
 import { Buffer } from "node:buffer";
 import { compactObject, requiredRecord } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import {
   defineOAuthProviderExecutors,
   defineProviderProxy,
@@ -736,12 +736,13 @@ async function downloadDriveItem(input: {
   const name = resolveDownloadFileName(metadata, input.format);
   const transitName = input.fileName ?? name;
   const mimeType = resolveDownloadMimeType(metadata, response, input.format);
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: transitFiles.maxBytes,
+  const file = await storeResponseInTransit(response, transitFiles, {
+    name: transitName,
+    mimeType,
     fieldName: "OneDrive download",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: input.deps.signal,
   });
-  const file = await transitFiles.create(new File([toArrayBuffer(bytes)], transitName, { type: mimeType }));
 
   return {
     fileId,
