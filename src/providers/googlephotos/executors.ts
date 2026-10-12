@@ -17,6 +17,7 @@ import {
   recordOrEmpty,
   stringArray,
 } from "../../core/cast.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import {
   defineProviderExecutors,
   defineProviderProxy,
@@ -518,9 +519,13 @@ async function uploadDownloadResponseToTransitFile(
     throw new ProviderRequestError(500, "Transit file storage is required for Google Photos downloads.");
   }
 
-  const upload = await input.context.transitFiles.create(
-    new File([Buffer.from(await downloadResponse.arrayBuffer())], input.fileName, { type: input.mimeType }),
-  );
+  const upload = await storeResponseInTransit(downloadResponse, input.context.transitFiles, {
+    name: input.fileName,
+    mimeType: input.mimeType,
+    fieldName: "Google Photos download",
+    createError: (message) => new ProviderRequestError(413, message),
+    signal: input.context.signal,
+  });
 
   return {
     fileName: input.fileName,
