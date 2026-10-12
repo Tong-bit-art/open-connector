@@ -163,9 +163,10 @@ export async function storeResponseInTransit(
     createError: options.createError,
     signal: options.signal,
   };
-  // `File.type` lower-cases the MIME type. Normalize here so the streamed path
-  // stores the same value the buffered path does, whatever the server sent.
-  const mimeType = options.mimeType.toLowerCase();
+  // `File.type` lower-cases the type and empties it entirely when any code
+  // point falls outside U+0020–U+007E. Mirror that so the streamed path stores
+  // exactly what the buffered path does, whatever the server sent.
+  const mimeType = /[^\u0020-\u007e]/.test(options.mimeType) ? "" : options.mimeType.toLowerCase();
   if (!transitFiles.createFromStream || !response.body) {
     const bytes = await readBoundedResponseBytes(response, limits);
     return await transitFiles.create(new File([Uint8Array.from(bytes)], options.name, { type: mimeType }));
