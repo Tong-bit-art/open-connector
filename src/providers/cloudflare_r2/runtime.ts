@@ -13,7 +13,12 @@ import {
   requiredRawString,
   requiredString,
 } from "../../core/cast.ts";
-import { assertPublicHttpUrl, queryParams, readBoundedResponseBytes } from "../../core/request.ts";
+import {
+  assertPublicHttpUrl,
+  queryParams,
+  readBoundedResponseBytes,
+  storeResponseInTransit,
+} from "../../core/request.ts";
 import { readCloudflareCurrentUser } from "../cloudflare_dns/runtime-user.ts";
 import {
   combineProviderActionHandlers,
@@ -266,12 +271,13 @@ async function downloadObject(input: Record<string, unknown>, context: Cloudflar
 
   const name = optionalString(input.fileName) ?? defaultObjectFileName(objectKey);
   const mimeType = optionalString(response.headers.get("content-type")) ?? "application/octet-stream";
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const file = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
     fieldName: "Cloudflare R2 download",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  const file = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
 
   return {
     fileId: objectKey,
