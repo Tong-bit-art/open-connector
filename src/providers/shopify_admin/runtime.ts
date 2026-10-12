@@ -10,7 +10,7 @@ import {
   requiredRecord,
   requiredString,
 } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import {
   createProviderTimeout,
   providerInputError,
@@ -1104,12 +1104,13 @@ async function downloadShopifyAdminBulkResult(
     const name = optionalString(input.fileName) ?? "shopify-bulk-operation-result.jsonl";
     const mimeType =
       optionalString(response.headers.get("content-type"))?.split(";")[0]?.trim() || "application/x-ndjson";
-    const bytes = await readBoundedResponseBytes(response, {
-      maxBytes: context.transitFiles.maxBytes,
+    const stored = await storeResponseInTransit(response, context.transitFiles, {
+      name,
+      mimeType,
       fieldName: "Shopify bulk result",
       createError: (message) => new ProviderRequestError(413, message),
+      signal: timeout.signal,
     });
-    const stored = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
     return {
       file: {
         fileId: stored.fileId,
