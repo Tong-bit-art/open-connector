@@ -13,7 +13,7 @@ import {
   optionalStringArray,
   requiredString,
 } from "../../core/cast.ts";
-import { assertPublicHttpUrl, readBoundedResponseBytes } from "../../core/request.ts";
+import { assertPublicHttpUrl, readBoundedResponseBytes, storeResponseInTransit } from "../../core/request.ts";
 import {
   createProviderTimeout,
   defineProviderExecutors,
@@ -885,14 +885,14 @@ async function slackDownloadFile(input: Record<string, unknown>, context: SlackA
       if (mimeType.split(";")[0]?.trim().toLowerCase() === "text/html" && metadata.mimetype !== "text/html") {
         throw providerResponseError("Slack returned an HTML page instead of the requested file");
       }
-      const bytes = await readBoundedResponseBytes(response, {
-        maxBytes: transitFiles.maxBytes,
+      const name = optionalString(metadata.name) ?? fileId;
+      const file = await storeResponseInTransit(response, transitFiles, {
+        name,
+        mimeType,
         fieldName: "Slack file download",
         createError: (message) => new ProviderRequestError(413, message),
+        signal,
       });
-      signal.throwIfAborted();
-      const name = optionalString(metadata.name) ?? fileId;
-      const file = await transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
       return { fileId, file };
     } finally {
       await response.body?.cancel().catch(() => undefined);
