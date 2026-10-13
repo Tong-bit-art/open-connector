@@ -3,7 +3,7 @@ import type { ProviderActionHandlers, ProviderFetch } from "../provider-runtime.
 
 import { basename } from "node:path";
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import {
   providerInputError,
   ProviderRequestError,
@@ -110,13 +110,17 @@ async function generateDocument(input: Record<string, unknown>, context: Templat
   });
   const name = generatedFileName(input.filename, format);
   const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim() ?? mimeTypeForFormat(format);
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const stored = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
     fieldName: name,
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  if (bytes.byteLength === 0) throw new ProviderRequestError(502, "TemplateDocs returned an empty document");
-  const stored = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
+  if (stored.sizeBytes === 0) {
+    await context.transitFiles.delete(stored.fileId).catch(() => undefined);
+    throw new ProviderRequestError(502, "TemplateDocs returned an empty document");
+  }
   return {
     document: {
       name: stored.name,
