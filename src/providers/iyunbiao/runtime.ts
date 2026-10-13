@@ -2,7 +2,7 @@ import type { TransitFileWriter } from "../../core/types.ts";
 
 import { createHash } from "node:crypto";
 import { optionalRecord, optionalString } from "../../core/cast.ts";
-import { assertPublicHttpUrl, readBoundedResponseBytes } from "../../core/request.ts";
+import { assertPublicHttpUrl, storeResponseInTransit } from "../../core/request.ts";
 import {
   providerInputError,
   ProviderRequestError,
@@ -295,14 +295,13 @@ export async function executeIyunbiaoAction(
         const fileName = requiredInputString(input.fileName, "fileName");
         const mimeType = response.headers.get("content-type") || "application/octet-stream";
         if (!options.transitFiles) throw providerInputError("Transit file storage is not enabled");
-        const bytes = await readBoundedResponseBytes(response, {
-          maxBytes: options.transitFiles.maxBytes,
+        const file = await storeResponseInTransit(response, options.transitFiles, {
+          name: fileName,
+          mimeType,
           fieldName: "Yunbiao attachment download",
           createError: (message) => new ProviderRequestError(413, message),
+          signal,
         });
-        const file = await options.transitFiles.create(
-          new File([Uint8Array.from(bytes)], fileName, { type: mimeType }),
-        );
         return { file, fileName, mimeType };
       });
   }
