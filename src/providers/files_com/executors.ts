@@ -15,7 +15,7 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { assertPublicHttpUrl, readBoundedResponseBytes } from "../../core/request.ts";
+import { assertPublicHttpUrl, storeResponseInTransit } from "../../core/request.ts";
 import {
   defineProviderExecutors,
   defineProviderProxy,
@@ -209,10 +209,9 @@ async function downloadFilesComFile(
     requiredString(payload.download_uri, "download_uri", (message) => new ProviderRequestError(502, message)),
   );
   const downloadSignal = composeFilesComRequestSignal(context.signal);
-  let response: Response;
-  let bytes: Uint8Array;
+  const transitName = optionalString(input.fileName) ?? remoteName;
   try {
-    response = await providerFetch(downloadUrl, {
+    const response = await providerFetch(downloadUrl, {
       headers: {
         accept: "*/*",
         "user-agent": providerUserAgent,
@@ -226,11 +225,26 @@ async function downloadFilesComFile(
         text || `files_com download failed with HTTP ${response.status}`,
       );
     }
-    bytes = await readBoundedResponseBytes(response, {
-      maxBytes: context.transitFiles.maxBytes,
+
+    const mimeType =
+      optionalString(response.headers.get("content-type")) ??
+      optionalString(payload.mime_type) ??
+      "application/octet-stream";
+    const file = await storeResponseInTransit(response, context.transitFiles, {
+      name: transitName,
+      mimeType,
       fieldName: "Files.com download",
       createError: (message) => new ProviderRequestError(413, message),
+      signal: downloadSignal,
     });
+
+    return {
+      fileId: remotePath,
+      name: remoteName,
+      mimeType,
+      sizeBytes: file.sizeBytes,
+      file,
+    };
   } catch (error) {
     if (error instanceof ProviderRequestError) {
       throw error;
@@ -240,21 +254,6 @@ async function downloadFilesComFile(
     }
     throw error;
   }
-
-  const mimeType =
-    optionalString(response.headers.get("content-type")) ??
-    optionalString(payload.mime_type) ??
-    "application/octet-stream";
-  const transitName = optionalString(input.fileName) ?? remoteName;
-  const file = await context.transitFiles.create(new File([Uint8Array.from(bytes)], transitName, { type: mimeType }));
-
-  return {
-    fileId: remotePath,
-    name: remoteName,
-    mimeType,
-    sizeBytes: file.sizeBytes,
-    file,
-  };
 }
 
 async function requestAndWrapFilesComJson(input: {
