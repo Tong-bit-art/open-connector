@@ -3,7 +3,7 @@ import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
 
 import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 export const screenshotoneApiBaseUrl = "https://api.screenshotone.com";
@@ -199,14 +199,15 @@ async function uploadScreenshotoneResponse(
     context,
     kind === "animation" ? "take_animated_screenshot" : "take_screenshot",
   );
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: transitFiles.maxBytes,
-    fieldName: `ScreenshotOne ${kind} output`,
-    createError: (message) => new ProviderRequestError(413, message),
-  });
   const mimeType = response.headers.get("content-type") ?? "application/octet-stream";
   const name = buildScreenshotoneTransitFileName(kind, mimeType);
-  const upload = await transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
+  const upload = await storeResponseInTransit(response, transitFiles, {
+    name,
+    mimeType,
+    fieldName: `ScreenshotOne ${kind} output`,
+    createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
+  });
 
   return {
     file: {
