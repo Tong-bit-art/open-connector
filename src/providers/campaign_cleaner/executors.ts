@@ -3,7 +3,7 @@ import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext, ProviderTransitFile } from "../provider-runtime.ts";
 
 import { compactObject, optionalBoolean, optionalRecord, optionalString } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import {
   defineApiKeyProviderExecutors,
   defineProviderProxy,
@@ -171,12 +171,13 @@ async function getCampaignPdfAnalysis(input: Record<string, unknown>, context: A
     sanitizeFilename(
       readContentDispositionFilename(response.headers.get("content-disposition")) ?? `campaign-cleaner-${id}.pdf`,
     ) ?? `campaign-cleaner-${id}.pdf`;
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const upload = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
     fieldName: name,
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  const upload = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
   const content: ProviderTransitFile = {
     fileId: upload.fileId,
     downloadUrl: upload.downloadUrl,
