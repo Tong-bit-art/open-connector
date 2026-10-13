@@ -11,7 +11,7 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import {
   createProviderFetch,
   defineApiKeyProviderExecutors,
@@ -113,19 +113,18 @@ async function captureLatchshotPage(
     throw await createLatchshotError(response, "execute");
   }
 
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const artifact = resolveArtifact(response.headers.get("content-type"), format);
+  const stored = await storeResponseInTransit(response, context.transitFiles, {
+    name: `latchshot-capture.${artifact.extension}`,
+    mimeType: artifact.mimeType,
     fieldName: "Latchshot artifact",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  if (bytes.byteLength === 0) {
+  if (stored.sizeBytes === 0) {
+    await context.transitFiles.delete(stored.fileId).catch(() => undefined);
     throw new ProviderRequestError(502, "Latchshot returned an empty artifact.");
   }
-
-  const artifact = resolveArtifact(response.headers.get("content-type"), format);
-  const stored = await context.transitFiles.create(
-    new File([Uint8Array.from(bytes)], `latchshot-capture.${artifact.extension}`, { type: artifact.mimeType }),
-  );
   const file: ProviderTransitFile = {
     fileId: stored.fileId,
     downloadUrl: stored.downloadUrl,
