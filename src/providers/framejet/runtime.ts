@@ -3,7 +3,7 @@ import type { ApiKeyProviderContext, ProviderActionHandlers, ProviderFetch } fro
 
 import { createHmac } from "node:crypto";
 import { optionalIntegerOrNull, optionalRecord, optionalString } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import {
   providerInputError,
   providerResponseError,
@@ -97,14 +97,15 @@ async function takeFramejetScreenshot(
         throw await readFramejetError(response);
       }
 
-      const bytes = await readBoundedResponseBytes(response, {
-        maxBytes: transitFiles.maxBytes,
-        fieldName: "Framejet screenshot",
-        createError: (message) => new ProviderRequestError(413, message),
-      });
       const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim() || "image/png";
       const name = mimeType === "image/jpeg" ? "framejet-screenshot.jpg" : "framejet-screenshot.png";
-      const upload = await transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
+      const upload = await storeResponseInTransit(response, transitFiles, {
+        name,
+        mimeType,
+        fieldName: "Framejet screenshot",
+        createError: (message) => new ProviderRequestError(413, message),
+        signal,
+      });
 
       return {
         file: {
