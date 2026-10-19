@@ -160,6 +160,7 @@ async function readThreatfoxError(response: Response): Promise<ProviderRequestEr
   const text = (await readProviderErrorTextBody(response, "ThreatFox error response")).trim();
   const message = text.slice(0, 200) || `ThreatFox request failed with HTTP ${response.status}`;
   const status = response.status;
-  const code = status === 429 ? "rate_limited" : status === 401 || status === 403 ? "unauthorized" : "provider_error";
+  const code =
+    status === 429 ? "rate_limited" : status === 401 || status === 403 ? "authorization_failed" : "provider_error";
   return new ProviderRequestError(status, message, withRetryAfterSeconds(response, {}), code);
 }

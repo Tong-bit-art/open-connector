@@ -180,6 +180,7 @@ async function readUrlhausError(response: Response): Promise<ProviderRequestErro
   const text = (await readProviderErrorTextBody(response, "URLhaus error response")).trim();
   const message = text.slice(0, 200) || `URLhaus request failed with HTTP ${response.status}`;
   const status = response.status;
-  const code = status === 429 ? "rate_limited" : status === 401 || status === 403 ? "unauthorized" : "provider_error";
+  const code =
+    status === 429 ? "rate_limited" : status === 401 || status === 403 ? "authorization_failed" : "provider_error";
   return new ProviderRequestError(status, message, withRetryAfterSeconds(response, {}), code);
 }
