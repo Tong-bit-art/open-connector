@@ -131,6 +131,89 @@ function readCodeLiterals(argumentSource: string, literalsByName: Map<string, st
   return codes;
 }
 
+/**
+ * Read the codes one call site's code argument can evaluate to. A bare
+ * identifier resolves through the nearest `const` binding before the call site,
+ * and a parameter of the enclosing callable shadows that binding, so a sibling
+ * function's constant is not attributed to a parameter of the same name.
+ */
+function readCodeArgumentLiterals(argumentSource: string, source: string, callIndex: number): string[] {
+  const literals = readCodeLiterals(argumentSource, new Map());
+  if (literals.length > 0) {
+    return literals;
+  }
+  const name = argumentSource.trim();
+  if (!/^[A-Za-z_$][\w$]*$/u.test(name)) {
+    return [];
+  }
+  if (findEnclosingCallable(source, callIndex)?.parameterNames.includes(name)) {
+    return [];
+  }
+  return readNearestCodeBindingLiterals(source, name, callIndex);
+}
+
+/**
+ * Read the literals the nearest `const name = <expression>` before a call site
+ * can evaluate to, when the expression is a plain ternary or a coalescing
+ * chain. Reading the nearest binding, rather than one table per file, keeps a
+ * later declaration of the same name from hiding an earlier code. A member
+ * access, call, index or object literal is left alone, so a lookup table or a
+ * message builder does not turn its strings into codes.
+ */
+function readNearestCodeBindingLiterals(source: string, name: string, beforeIndex: number): string[] {
+  let literals: string[] = [];
+  for (const match of source.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*([^;\n]+)/gu)) {
+    if (match.index > beforeIndex) break;
+    if (match[1] !== name) continue;
+    const lineStart = source.lastIndexOf("\n", match.index) + 1;
+    const linePrefix = source.slice(lineStart, match.index).trimStart();
+    if (linePrefix.startsWith("//") || linePrefix.startsWith("*")) {
+      continue;
+    }
+    const expression = match[2]!.trim();
+    literals = isPlainCodeExpression(expression) ? readCodeLiterals(expression, new Map()) : [];
+  }
+  return literals;
+}
+
+/**
+ * Whether an initializer is a plain expression the guard may resolve: a ternary
+ * or coalescing chain with balanced grouping parentheses, but no member access,
+ * call, index, object literal or arrow. Grouping is allowed because
+ * `(a || b) ? "code" : "code"` names the same values as the ungrouped form; a
+ * `(` after a value is a call or a grouping of a computed value and stays
+ * unsupported, and literals are masked so their punctuation is not read as
+ * syntax.
+ */
+function isPlainCodeExpression(expression: string): boolean {
+  if (expression.includes("=>")) {
+    return false;
+  }
+  const masked = stripStringLiterals(expression);
+  // A comma or a plus means another declarator or a concatenated value; the
+  // literals are then not the code, so leave the binding unresolved.
+  if (/[.,[\]{}]/u.test(masked) || masked.includes("+")) {
+    return false;
+  }
+  let depth = 0;
+  for (let index = 0; index < masked.length; index += 1) {
+    const character = masked[index]!;
+    if (character === "(") {
+      const before = masked.slice(0, index).trimEnd();
+      if (/[A-Za-z0-9_$)\]]/u.test(before.at(-1) ?? "")) {
+        return false;
+      }
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth < 0) {
+        return false;
+      }
+    }
+  }
+  return depth === 0;
+}
+
 /** Read the `const name = "literal"` bindings a code argument can name. */
 function readStringConstants(source: string): Map<string, string> {
   const literalsByName = new Map<string, string>();
@@ -610,12 +693,11 @@ function findUndocumentedErrorCodes(sources: ProviderSource[]): ErrorCodeArgumen
   const scopes = findForwardedArgumentIndexes(sources, 3);
   const hits: ErrorCodeArgumentHit[] = [];
   for (const entry of sources) {
-    const literalsByName = readStringConstants(entry.source);
     for (const [callee, decided] of calleesVisibleIn(scopes, entry.file)) {
       for (const site of findCallSitesIn(entry, callee)) {
         const codes = [...decided.indexes].flatMap((argumentIndex) => {
           const codeArgument = site.argumentSources[argumentIndex];
-          return codeArgument === undefined ? [] : readCodeLiterals(codeArgument, literalsByName);
+          return codeArgument === undefined ? [] : readCodeArgumentLiterals(codeArgument, entry.source, site.index);
         });
         for (const code of [...decided.constants, ...codes]) {
           if (!allowed.has(code)) {
@@ -635,5 +717,129 @@ describe("provider auth-failure status guard", () => {
 
   it("only puts error codes a provider owns on the wire", () => {
     expect(findUndocumentedErrorCodes(providerSources)).toEqual([]);
+  });
+
+  it("reads a code argument named through a local constant", () => {
+    const source = [
+      'const code = status === 429 ? "rate_limited" : "unauthorized";',
+      'throw new ProviderRequestError(status, "failed", undefined, code);',
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([
+      { file: "example/executors.ts", line: 2, code: "unauthorized" },
+    ]);
+  });
+
+  it("accepts a local constant that only names owned codes", () => {
+    const source = [
+      'const code = status === 429 ? "rate_limited" : "provider_error";',
+      'throw new ProviderRequestError(status, "failed", undefined, code);',
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([]);
+  });
+
+  it("reads each local constant before its call site, not by name across the file", () => {
+    const source = [
+      "function first() {",
+      '  const code = status === 429 ? "rate_limited" : "unauthorized";',
+      '  throw new ProviderRequestError(status, "failed", undefined, code);',
+      "}",
+      "function second() {",
+      '  const code = status === 429 ? "rate_limited" : "provider_error";',
+      '  throw new ProviderRequestError(status, "failed", undefined, code);',
+      "}",
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([
+      { file: "example/executors.ts", line: 3, code: "unauthorized" },
+    ]);
+  });
+
+  it("reads a directly named code constant", () => {
+    const source = [
+      'const code = "unauthorized";',
+      'throw new ProviderRequestError(status, "failed", undefined, code);',
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([
+      { file: "example/executors.ts", line: 2, code: "unauthorized" },
+    ]);
+  });
+
+  it("does not attribute a sibling constant to a same-named parameter", () => {
+    const source = [
+      "function first() {",
+      '  const code = "unauthorized";',
+      '  throw new ProviderRequestError(status, "failed", undefined, code);',
+      "}",
+      "function second(code) {",
+      '  throw new ProviderRequestError(status, "failed", undefined, code);',
+      "}",
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([
+      { file: "example/executors.ts", line: 3, code: "unauthorized" },
+    ]);
+  });
+
+  it("reads a grouped ternary binding", () => {
+    const source = [
+      'const code = (status === 401 || status === 403) ? "unauthorized" : "provider_error";',
+      'throw new ProviderRequestError(status, "failed", undefined, code);',
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([
+      { file: "example/executors.ts", line: 2, code: "unauthorized" },
+    ]);
+  });
+
+  it("does not read a call expression binding", () => {
+    const source = [
+      'const code = pickCode(status) ? "rate_limited" : "unauthorized";',
+      'throw new ProviderRequestError(status, "failed", undefined, code);',
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([]);
+  });
+
+  it("reads a binding whose assignment wraps after the equals sign", () => {
+    const source = [
+      "const code =",
+      '  status === 429 ? "rate_limited" : "unauthorized";',
+      'throw new ProviderRequestError(status, "failed", undefined, code);',
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([
+      { file: "example/executors.ts", line: 3, code: "unauthorized" },
+    ]);
+  });
+
+  it("does not read another declarator's literal", () => {
+    const source = [
+      'const code = "provider_error", message = ("unauthorized");',
+      'throw new ProviderRequestError(status, "failed", undefined, code);',
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([]);
+  });
+
+  it("does not read concatenated literals as separate codes", () => {
+    const source = [
+      'const code = "provider_" + "error";',
+      'throw new ProviderRequestError(status, "failed", undefined, code);',
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([]);
+  });
+
+  it("ignores a commented-out declaration", () => {
+    const source = [
+      'const code = "provider_error";',
+      '// const code = "unauthorized";',
+      'throw new ProviderRequestError(status, "failed", undefined, code);',
+    ].join("\n");
+    const fixture = [{ file: "example/executors.ts", source, lines: source.split("\n") }];
+    expect(findUndocumentedErrorCodes(fixture)).toEqual([]);
   });
 });
